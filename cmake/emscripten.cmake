@@ -40,3 +40,7 @@ set(SAGE_USE_GLM  ON  CACHE BOOL "" FORCE)
 set(SAGE_USE_OPENAL   OFF CACHE BOOL "" FORCE)  # audio wiring is a later plan
 set(SAGE_USE_MINIAUDIO OFF CACHE BOOL "" FORCE)
 set(SAGE_UPDATE_CHECK OFF CACHE BOOL "" FORCE)  # libcurl update-checker: networking, later plan
+# Deterministic (fdlibm) math is for cross-platform replay/MP bit-exactness - a
+# later plan. Its fetched sources assume x86 fenv (FE_INVALID/FE_INEXACT) that
+# emscripten's fenv.h lacks. Engine has a CRT-math fallback when this is OFF.
+set(SAGE_USE_DETERMINISTIC_MATH OFF CACHE BOOL "" FORCE)
