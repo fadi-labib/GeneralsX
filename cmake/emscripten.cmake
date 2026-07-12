@@ -34,11 +34,13 @@ add_compile_options(-pthread)
 add_link_options(-pthread -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1)
 
 # Exceptions: the engine uses try/catch for control flow (INI loader throws
-# INI_CANT_OPEN_FILE etc. and catches them). Emscripten disables exception
-# catching by default, so those catch blocks are dead and any throw aborts.
-# -fexceptions makes try/catch work. Also selects the exception-enabled libc++.
-add_compile_options(-fexceptions)
-add_link_options(-fexceptions)
+# INI_CANT_OPEN_FILE etc., catches, sometimes re-throws). Emscripten disables
+# exception catching by default so those catches are dead and throws abort.
+# Use -fwasm-exceptions (native WASM EH) not -fexceptions (legacy JS-based EH):
+# the JS-based unwinder hangs under PROXY_TO_PTHREAD when an exception is
+# re-thrown across the worker. Native WASM EH works with pthreads and is faster.
+add_compile_options(-fwasm-exceptions)
+add_link_options(-fwasm-exceptions)
 
 # WebGL2/GLES3: dx8wasm renders through a WebGL2 context. Match its smoke build.
 # OFFSCREENCANVAS_SUPPORT: main() runs on the PROXY_TO_PTHREAD worker, so the GL
