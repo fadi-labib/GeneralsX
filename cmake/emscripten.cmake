@@ -24,6 +24,11 @@ FetchContent_MakeAvailable(glm gli)
 add_compile_options(-sUSE_ZLIB=1 -sUSE_FREETYPE=1)
 add_link_options(-sUSE_ZLIB=1 -sUSE_FREETYPE=1)
 
+# gli's reduce.inl misuses `.template fetch(` on a non-template member; newer
+# Clang (emscripten) promotes this to a hard error. gli is fetched (can't patch
+# cleanly), so demote the diagnostic. Harmless: the construct is valid pre-C++20.
+add_compile_options(-Wno-missing-template-arg-list-after-template-kw)
+
 # Engine boots off the main thread (blocking init + sync file I/O).
 add_compile_options(-pthread)
 add_link_options(-pthread -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1)
