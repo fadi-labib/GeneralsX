@@ -619,8 +619,13 @@ void GameEngine::init()
 	DEBUG_LOG(("%s", Buf));////////////////////////////////////////////////////////////////////////////
 	#endif/////////////////////////////////////////////////////////////////////////////////////////////
 		initSubsystem(TheAudio,"TheAudio", createAudioManager(TheGlobalData->m_headless), nullptr);
+#ifndef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - audio is stubbed on wasm (MiniAudio, no music
+		// yet), so "music not loaded" is expected, not a fatal condition. Guarding
+		// this prevents the engine from quitting before the main loop starts.
 		if (!TheAudio->isMusicAlreadyLoaded())
 			setQuitting(TRUE);
+#endif
 
 #if RTS_ZEROHOUR && RETAIL_COMPATIBLE_CRC
 		TheNameKeyGenerator->syncNameKeyID();
