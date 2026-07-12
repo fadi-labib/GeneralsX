@@ -36,7 +36,7 @@ add_compile_options(-pthread)
 # ("must not be resizable") - which breaks glUniformMatrix4fv etc. A large fixed
 # heap keeps the SharedArrayBuffer non-resizable so WebGL accepts the views.
 add_link_options(-pthread -sPROXY_TO_PTHREAD=1
-  -sINITIAL_MEMORY=1610612736 -sALLOW_MEMORY_GROWTH=0)  # 1.5 GB fixed
+  -sINITIAL_MEMORY=2147483648 -sALLOW_MEMORY_GROWTH=0)  # 2 GB fixed (holds the in-game asset bundle)
 
 # Exceptions: the engine uses try/catch for control flow (INI loader throws
 # INI_CANT_OPEN_FILE etc., catches, sometimes re-throws). Emscripten disables
