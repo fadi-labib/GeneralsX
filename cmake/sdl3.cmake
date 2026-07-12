@@ -37,8 +37,15 @@ if(SAGE_USE_SDL3)
         )
         
         # Configure SDL3 build options
-        set(SDL_SHARED ON CACHE BOOL "Build SDL3 as shared library" FORCE)
-        set(SDL_STATIC OFF CACHE BOOL "Don't build static library" FORCE)
+        # GeneralsX @build dx8wasm - Emscripten can't build shared libs; SDL3
+        # links statically into the wasm module (SDL3 has an emscripten target).
+        if(EMSCRIPTEN)
+            set(SDL_SHARED OFF CACHE BOOL "No shared libs on wasm" FORCE)
+            set(SDL_STATIC ON  CACHE BOOL "Static SDL3 for wasm" FORCE)
+        else()
+            set(SDL_SHARED ON CACHE BOOL "Build SDL3 as shared library" FORCE)
+            set(SDL_STATIC OFF CACHE BOOL "Don't build static library" FORCE)
+        endif()
         set(SDL_AUDIO ON CACHE BOOL "Enable audio subsystem" FORCE)
         set(SDL_TIMERS ON CACHE BOOL "Enable timers" FORCE)
         set(SDL_EVENTS ON CACHE BOOL "Enable events" FORCE)
@@ -53,7 +60,16 @@ if(SAGE_USE_SDL3)
         set(SDL_QSPI OFF CACHE BOOL "Disable QSPI (unused)" FORCE)
         
         FetchContent_MakeAvailable(SDL3)
-        
+
+      if(EMSCRIPTEN)
+        # GeneralsX @build dx8wasm - SDL3_image (PNG cursor loading) is a runtime
+        # asset concern; skip it for the M3 link. sdl3lib is SDL3 only. SDL3Mouse's
+        # IMG_ usage is guarded under __EMSCRIPTEN__ in the GameEngineDevice layer.
+        add_library(sdl3lib INTERFACE)
+        target_link_libraries(sdl3lib INTERFACE SDL3::SDL3)
+        target_include_directories(sdl3lib INTERFACE "${SDL3_SOURCE_DIR}/include")
+        message(STATUS "✓ SDL3 (${SDL3_VERSION}) configured for wasm (no SDL3_image)")
+      else()
         # GeneralsX @bugfix BenderAI 22/02/2026 (updated 24/02/2026 for macOS)
         # Before SDL3_image build: force PNG discovery to platform-specific libpng
         # Linux: System libpng16.so is dynamic shared library
@@ -137,5 +153,6 @@ if(SAGE_USE_SDL3)
         message(STATUS "✓ SDL3 (${SDL3_VERSION}) + SDL3_image (${SDL3_IMAGE_VERSION}) configured")
         message(STATUS "  Build approach: Native FetchContent compilation")
         message(STATUS "  PNG support: System libpng-dev (dynamic linking)")
+      endif()
     endif()
 endif()

@@ -70,6 +70,9 @@ endif()
 # On Linux: DXVK headers (for D3D8→Vulkan translation)
 include(cmake/dx8.cmake)
 
+# GeneralsX @build dx8wasm - Emscripten enablement (guarded, no-op off-wasm)
+include(cmake/emscripten.cmake)
+
 # SDL3 windowing/input for Linux builds (Phase 1)
 # GeneralsX @build BenderAI 11/02/2026
 if(SAGE_USE_SDL3)

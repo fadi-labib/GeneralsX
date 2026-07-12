@@ -250,7 +250,9 @@ if (MSVC AND NOT IS_VS6_BUILD)
 endif()
 
 # GeneralsX @build fbraz 11/02/2026 BenderAI - FreeType2 for Unix text rendering (Linux + macOS Phase 5)
-if(UNIX)
+# GeneralsX @build dx8wasm - on Emscripten, freetype comes from -sUSE_FREETYPE
+# (port flags in cmake/emscripten.cmake); fontconfig/iconv are link stubs.
+if(UNIX AND NOT EMSCRIPTEN)
     find_package(Freetype REQUIRED)
     # GeneralsX @build felipebraz 20/06/2025 fontconfig needed on macOS too (render2dsentence.cpp uses Locate_Font_FontConfig)
     find_package(Fontconfig REQUIRED)
