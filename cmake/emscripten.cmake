@@ -31,7 +31,12 @@ add_compile_options(-Wno-missing-template-arg-list-after-template-kw)
 
 # Engine boots off the main thread (blocking init + sync file I/O).
 add_compile_options(-pthread)
-add_link_options(-pthread -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1)
+# Fixed (non-growable) memory: with pthreads + WebGL2, growable shared memory is
+# exposed as a *resizable* ArrayBuffer, and WebGL rejects typed-array views of it
+# ("must not be resizable") - which breaks glUniformMatrix4fv etc. A large fixed
+# heap keeps the SharedArrayBuffer non-resizable so WebGL accepts the views.
+add_link_options(-pthread -sPROXY_TO_PTHREAD=1
+  -sINITIAL_MEMORY=1610612736 -sALLOW_MEMORY_GROWTH=0)  # 1.5 GB fixed
 
 # Exceptions: the engine uses try/catch for control flow (INI loader throws
 # INI_CANT_OPEN_FILE etc., catches, sometimes re-throws). Emscripten disables
