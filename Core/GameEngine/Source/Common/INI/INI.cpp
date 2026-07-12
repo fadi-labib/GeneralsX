@@ -889,7 +889,20 @@ void INI::parseAndTranslateLabel( INI* ini, void * /*instance*/, void *store, co
 	// translate
 	UnicodeString translated = TheGameText->fetch( token );
 	if( translated.isEmpty() )
+	{
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - a missing/empty translation would throw here,
+		// and the INI loader re-throws it up a deep stack; rather than abort init
+		// over a UI label, log it and fall back to the raw token.
+		fprintf(stderr, "[INI] parseAndTranslateLabel: empty translation for '%s' - using raw token\n", token ? token : "(null)");
+		fflush(stderr);
+		UnicodeString *theStr = (UnicodeString *)store;
+		theStr->translate( AsciiString(token ? token : "") );
+		return;
+#else
 		throw INI_INVALID_DATA;
+#endif
+	}
 
 	// save the translated text
 	UnicodeString *theString = (UnicodeString *)store;
