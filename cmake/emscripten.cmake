@@ -37,7 +37,10 @@ add_link_options(-pthread -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1)
 # emscripten port at link time; audio deferred; math helpers via GLM/GLI.
 set(SAGE_USE_SDL3 ON  CACHE BOOL "" FORCE)
 set(SAGE_USE_GLM  ON  CACHE BOOL "" FORCE)
-set(SAGE_USE_OPENAL   OFF CACHE BOOL "" FORCE)  # audio wiring is a later plan
+# Emscripten ships OpenAL (headers + -lopenal), so enable the OpenAL backend: it
+# supplies the -DSAGE_USE_OPENAL that activates MilesStub and the audio device.
+# Actual sound output is still a later plan; this just lets it compile+link.
+set(SAGE_USE_OPENAL   ON  CACHE BOOL "" FORCE)
 set(SAGE_USE_MINIAUDIO OFF CACHE BOOL "" FORCE)
 set(SAGE_UPDATE_CHECK OFF CACHE BOOL "" FORCE)  # libcurl update-checker: networking, later plan
 # Deterministic (fdlibm) math is for cross-platform replay/MP bit-exactness - a

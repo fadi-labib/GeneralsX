@@ -138,6 +138,12 @@ target_include_directories(CompatLib PUBLIC
 # REVERSED from previous (CompatLib linking TO d3d8lib)
 target_link_libraries(d3d8lib INTERFACE CompatLib)
 
+# GeneralsX @build dx8wasm - on Emscripten, d3d8lib resolves Direct3DCreate8 (and
+# the whole D3D8 COM ABI) from the dx8wasm backend static lib (defined in dx8.cmake).
+if(EMSCRIPTEN)
+    target_link_libraries(d3d8lib INTERFACE dx8wasm_backend)
+endif()
+
 # CompatLib needs d3dx8 for D3DX types
 # SDL3 headers available via vcpkg but linking happens in GameEngineDevice/Main
 target_link_libraries(CompatLib PUBLIC d3dx8)

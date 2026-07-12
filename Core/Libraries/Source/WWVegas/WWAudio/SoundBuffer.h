@@ -38,7 +38,8 @@
 
 // TheSuperHackers @build 09/02/2026 Conditionally include Miles (Windows only)
 // GeneralsX @feature fbraz 11/06/2026 Also use MilesStub when MiniAudio is enabled
-#if !defined(SAGE_USE_OPENAL) && !defined(SAGE_USE_MINIAUDIO)
+// GeneralsX @build dx8wasm - Emscripten uses MilesStub (no proprietary Miles).
+#if !defined(SAGE_USE_OPENAL) && !defined(SAGE_USE_MINIAUDIO) && !defined(__EMSCRIPTEN__)
 #pragma warning (push, 3)
 #include "mss.h"
 #pragma warning (pop)

@@ -1645,6 +1645,12 @@ FontCharsClass::Update_Current_Buffer (int char_width)
 const char *
 FontCharsClass::Locate_Font_FontConfig (const char *font_name)
 {
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - no fontconfig on the web. Font files resolve from
+	// a bundled asset path in the runtime plan; until then, report no match.
+	(void)font_name;
+	return nullptr;
+#else
 	//
 	//	Initialize Fontconfig library
 	//
@@ -1692,6 +1698,7 @@ FontCharsClass::Locate_Font_FontConfig (const char *font_name)
 	FcConfigDestroy( config );
 
 	return font_path;
+#endif // __EMSCRIPTEN__
 }
 
 

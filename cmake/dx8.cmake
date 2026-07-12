@@ -193,3 +193,26 @@ else()
   message(STATUS "Using DXVK native (Linux DirectX→Vulkan)")
   message(STATUS "DXVK source directory: ${dxvk_SOURCE_DIR}")
 endif()
+
+# GeneralsX @build dx8wasm - Emscripten backend.
+# The engine keeps DXVK's native d3d8.h (fetched in the else() branch above) as
+# its ABI; dx8wasm provides the *implementation* (Direct3DCreate8 + the full COM
+# vtable), proven ABI-compatible with that header in M2. We compile dx8wasm's
+# backend sources directly into a static lib (not add_subdirectory, which would
+# drag in dx8wasm's SDL3-port smoke-test executables and clash with the engine's
+# own SDL3). The GL/context/platform layer is deferred to the runtime plan.
+if(EMSCRIPTEN)
+  if(NOT DEFINED DX8WASM_DIR)
+    message(FATAL_ERROR "DX8WASM_DIR not set (point at the dx8wasm sibling repo)")
+  endif()
+  add_library(dx8wasm_backend STATIC
+    ${DX8WASM_DIR}/runtime/d3d8webgl/d3d8.cpp
+    ${DX8WASM_DIR}/runtime/d3d8webgl/device.cpp
+    ${DX8WASM_DIR}/runtime/graphics-ff/ff_shader.cpp
+    ${DX8WASM_DIR}/runtime/coverage/coverage.cpp
+    ${DX8WASM_DIR}/runtime/runtime.cpp)
+  target_include_directories(dx8wasm_backend PUBLIC
+    ${DX8WASM_DIR}/runtime ${DX8WASM_DIR}/runtime/d3d8 ${DX8WASM_DIR}/runtime/include)
+  target_compile_features(dx8wasm_backend PUBLIC cxx_std_17)  # dx8wasm requires C++17
+  message(STATUS "dx8wasm backend enabled (WASM) - implementation for the DXVK d3d8.h ABI")
+endif()

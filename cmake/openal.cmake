@@ -24,7 +24,16 @@
 #
 # Reference: jmarshall OpenAL implementation uses <AL/al.h> throughout.
 
-if(SAGE_USE_OPENAL)
+if(SAGE_USE_OPENAL AND EMSCRIPTEN)
+    # GeneralsX @build dx8wasm - Emscripten bundles OpenAL (headers in the sysroot,
+    # -lopenal at link). No FetchContent build of openal-soft needed.
+    if(NOT TARGET OpenAL::OpenAL)
+        add_library(OpenAL::OpenAL INTERFACE IMPORTED)
+        target_link_libraries(OpenAL::OpenAL INTERFACE -lopenal)
+    endif()
+    message(STATUS "OpenAL: using Emscripten built-in (-lopenal)")
+
+elseif(SAGE_USE_OPENAL)
     set(OPENAL_FOUND FALSE)
     set(OpenAL_FOUND FALSE)
 

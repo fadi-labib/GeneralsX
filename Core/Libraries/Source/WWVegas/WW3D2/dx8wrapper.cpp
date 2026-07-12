@@ -419,6 +419,10 @@ static DynamicVectorClass<RenderDeviceDescClass>	_RenderDeviceDescriptionTable;
 typedef IDirect3D8* (WINAPI *Direct3DCreate8Type) (UINT SDKVersion);
 Direct3DCreate8Type	Direct3DCreate8Ptr = nullptr;
 HINSTANCE D3D8Lib = nullptr;
+#ifdef __EMSCRIPTEN__
+// GeneralsX @build dx8wasm - the statically-linked dx8wasm backend export.
+extern "C" IDirect3D8* Direct3DCreate8(UINT SDKVersion);
+#endif
 
 DX8_CleanupHook	 *DX8Wrapper::m_pCleanupHook=nullptr;
 #ifdef EXTENDED_STATS
@@ -569,6 +573,14 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 
 	if (!lite) {
 		// GeneralsX @build BenderAI 10/02/2026 - Platform-specific DLL/SO/DYLIB loading (Phase 5: macOS)
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - Emscripten has no native dynamic loader; the
+		// dx8wasm backend is statically linked. Bind the exported symbol directly
+		// instead of LoadLibrary/GetProcAddress. ABI proven interop in M2.
+		// (extern "C" decl at file scope below; can't appear inside a function.)
+		Direct3DCreate8Ptr = &Direct3DCreate8;
+		D3D8Lib = (HINSTANCE)1;  // non-null so the null-check below passes
+#else
 #ifdef _WIN32
 		D3D8Lib = LoadLibrary("D3D8.DLL");
 #elif defined(__APPLE__)
@@ -588,6 +600,7 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 			fprintf(stderr, "ERROR: DX8Wrapper::Init() - dlerror(): %s\n", error ? error : "unknown");
 		}
 #endif
+#endif // __EMSCRIPTEN__
 
 		if (D3D8Lib == nullptr) {
 			fprintf(stderr, "ERROR: DX8Wrapper::Init() - Failed to load D3D8 library\n");

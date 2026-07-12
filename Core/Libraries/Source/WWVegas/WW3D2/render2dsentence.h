@@ -47,7 +47,11 @@
 #if defined(SAGE_USE_FREETYPE) && !defined(_WIN32)
     #include <ft2build.h>
     #include FT_FREETYPE_H
+    // GeneralsX @build dx8wasm - no fontconfig on the web; fonts resolve from a
+    // known asset path (later plan). FreeType itself comes from -sUSE_FREETYPE.
+    #ifndef __EMSCRIPTEN__
     #include <fontconfig/fontconfig.h>
+    #endif
 #endif
 
 /*
