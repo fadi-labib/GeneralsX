@@ -284,6 +284,32 @@ int main(int argc, char* argv[])
 			return 1;
 		}
 
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - the wasm backend (dx8wasm) renders via WebGL2,
+		// not Vulkan/DXVK. Create an OpenGL ES 3.0 window + context; dx8wasm adopts
+		// the current context (it does not create its own window on wasm).
+		fprintf(stderr, "INFO: Creating SDL3 OpenGL ES3 window (WebGL2)...\n");
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+		SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+		TheSDL3Window = SDL_CreateWindow(
+			"Command & Conquer Generals: Zero Hour",
+			1024, 768, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+		if (!TheSDL3Window) {
+			fprintf(stderr, "FATAL: Failed to create SDL3 GL window: %s\n", SDL_GetError());
+			SDL_Quit();
+			return 1;
+		}
+		SDL_GLContext glctx = SDL_GL_CreateContext(TheSDL3Window);
+		if (!glctx) {
+			fprintf(stderr, "FATAL: Failed to create GL context: %s\n", SDL_GetError());
+			SDL_Quit();
+			return 1;
+		}
+		SDL_GL_MakeCurrent(TheSDL3Window, glctx);
+		fprintf(stderr, "INFO: SDL3 GL ES3 window + context created\n");
+#else
 		// Set DXVK WSI driver before loading Vulkan
 		setenv("DXVK_WSI_DRIVER", "SDL3", 1);
 
@@ -314,6 +340,7 @@ int main(int argc, char* argv[])
 			SDL_Quit();
 			return 1;
 		}
+#endif
 
 		// Store window handle globally (cast SDL_Window* to HWND for compatibility)
 		ApplicationHWnd = (HWND)TheSDL3Window;
