@@ -50,3 +50,5 @@ set(SAGE_UPDATE_CHECK OFF CACHE BOOL "" FORCE)  # libcurl update-checker: networ
 set(SAGE_USE_DETERMINISTIC_MATH OFF CACHE BOOL "" FORCE)
 # Crash-dump writing is Windows-only (MiniDumpWriteDump / FILETIME). Off on wasm.
 set(RTS_CRASHDUMP_ENABLE OFF CACHE BOOL "" FORCE)
+# SagePatch is a Linux LD_PRELOAD interposer (.so) - meaningless on wasm.
+set(RTS_BUILD_OPTION_SAGE_PATCH OFF CACHE BOOL "" FORCE)
