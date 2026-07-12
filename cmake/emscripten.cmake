@@ -47,9 +47,11 @@ add_link_options(-pthread -sPROXY_TO_PTHREAD=1
 add_compile_options(-fwasm-exceptions)
 add_link_options(-fwasm-exceptions)
 
-# WebGL2/GLES3: dx8wasm renders through a WebGL2 context. Match its smoke build.
-# OFFSCREENCANVAS_SUPPORT: main() runs on the PROXY_TO_PTHREAD worker, so the GL
-# context is created off the main thread - which requires an OffscreenCanvas.
+# WebGL2/GLES3: dx8wasm renders through a WebGL2 context. main() runs on the
+# PROXY_TO_PTHREAD worker, so the canvas is transferred to that worker
+# (OffscreenCanvas). The worker owns the canvas + its requestAnimationFrame, which
+# drives GameEngine::execute's emscripten_set_main_loop; each rAF renders one frame
+# and the OffscreenCanvas auto-presents it to the page.
 add_link_options(-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
   -sOFFSCREENCANVAS_SUPPORT=1 "-sOFFSCREENCANVASES_TO_PTHREAD=#canvas")
 

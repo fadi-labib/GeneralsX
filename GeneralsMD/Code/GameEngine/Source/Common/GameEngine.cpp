@@ -27,6 +27,9 @@
 // Author: Michael S. Booth, April 2001
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>  // emscripten_set_main_loop for the browser render loop
+#endif
 
 #include "Common/ActionManager.h"
 #include "Common/AudioAffect.h"
@@ -1036,10 +1039,31 @@ extern HWND ApplicationHWnd;
 /** -----------------------------------------------------------------------------------------------
  * The "main loop" of the game engine. It will not return until the game exits.
  */
+#ifdef __EMSCRIPTEN__
+// One engine frame, driven by the browser's requestAnimationFrame. A blocking
+// while(!quit) loop never returns to the event loop, so rendered frames are never
+// composited to the canvas; emscripten_set_main_loop yields each frame so WebGL
+// presents. See execute() below.
+static void wasm_engine_frame()
+{
+	if (!TheGameEngine || TheGameEngine->getQuitting()) { emscripten_cancel_main_loop(); return; }
+	try { TheGameEngine->update(); }
+	catch (...) { emscripten_cancel_main_loop(); return; }
+	TheFramePacer->update();
+}
+#endif
+
 void GameEngine::execute()
 {
 #if defined(RTS_DEBUG)
 	DWORD startTime = timeGetTime() / 1000;
+#endif
+
+#ifdef __EMSCRIPTEN__
+	// Non-blocking browser main loop (0 = requestAnimationFrame cadence, 1 =
+	// simulate infinite loop so this call unwinds and keeps the runtime alive).
+	emscripten_set_main_loop(wasm_engine_frame, 0, 1);
+	return;
 #endif
 
 	// pretty basic for now
