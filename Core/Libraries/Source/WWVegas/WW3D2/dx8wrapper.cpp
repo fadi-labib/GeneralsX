@@ -607,12 +607,16 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 			return false;	// Return false at this point if init failed
 		}
 
+#ifndef __EMSCRIPTEN__
+		// On wasm Direct3DCreate8Ptr was already bound to the static symbol above;
+		// GetProcAddress would dlsym the fake handle and clobber it with null.
 		fprintf(stderr, "DEBUG: DX8Wrapper::Init() - Getting Direct3DCreate8 function pointer...\n");
 		Direct3DCreate8Ptr = (Direct3DCreate8Type) GetProcAddress(D3D8Lib, "Direct3DCreate8");
 		if (Direct3DCreate8Ptr == nullptr) {
 			fprintf(stderr, "ERROR: DX8Wrapper::Init() - Failed to get Direct3DCreate8 function\n");
 			return false;
 		}
+#endif
 
 		/*
 		** Create the D3D interface object

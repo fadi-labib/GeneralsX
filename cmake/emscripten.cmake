@@ -39,6 +39,10 @@ add_link_options(-pthread -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1)
 add_link_options(-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
   -sOFFSCREENCANVAS_SUPPORT=1 "-sOFFSCREENCANVASES_TO_PTHREAD=#canvas")
 
+# FORCE_FILESYSTEM: game data (.big archives) is delivered as a separate
+# file_packager bundle loaded at runtime, so the engine must include FS support.
+add_link_options(-sFORCE_FILESYSTEM=1)
+
 # Feature flags the engine's option tree keys off. SDL3 comes from the
 # emscripten port at link time; audio deferred; math helpers via GLM/GLI.
 set(SAGE_USE_SDL3 ON  CACHE BOOL "" FORCE)
