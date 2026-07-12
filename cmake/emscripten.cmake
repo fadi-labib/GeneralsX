@@ -37,13 +37,16 @@ add_link_options(-pthread -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1)
 # emscripten port at link time; audio deferred; math helpers via GLM/GLI.
 set(SAGE_USE_SDL3 ON  CACHE BOOL "" FORCE)
 set(SAGE_USE_GLM  ON  CACHE BOOL "" FORCE)
-# Emscripten ships OpenAL (headers + -lopenal), so enable the OpenAL backend: it
-# supplies the -DSAGE_USE_OPENAL that activates MilesStub and the audio device.
-# Actual sound output is still a later plan; this just lets it compile+link.
-set(SAGE_USE_OPENAL   ON  CACHE BOOL "" FORCE)
-set(SAGE_USE_MINIAUDIO OFF CACHE BOOL "" FORCE)
+# Audio backend: MiniAudio (single-header) rather than OpenAL. The OpenAL device
+# hard-requires FFmpeg (libavcodec) for decoding, which is heavy to build for wasm;
+# MiniAudio replaces OpenAL+FFmpeg for audio with no extra deps and still supplies
+# the -DSAGE_USE_MINIAUDIO that activates MilesStub. Sound output is a later plan.
+set(SAGE_USE_OPENAL    OFF CACHE BOOL "" FORCE)
+set(SAGE_USE_MINIAUDIO ON  CACHE BOOL "" FORCE)
 set(SAGE_UPDATE_CHECK OFF CACHE BOOL "" FORCE)  # libcurl update-checker: networking, later plan
 # Deterministic (fdlibm) math is for cross-platform replay/MP bit-exactness - a
 # later plan. Its fetched sources assume x86 fenv (FE_INVALID/FE_INEXACT) that
 # emscripten's fenv.h lacks. Engine has a CRT-math fallback when this is OFF.
 set(SAGE_USE_DETERMINISTIC_MATH OFF CACHE BOOL "" FORCE)
+# Crash-dump writing is Windows-only (MiniDumpWriteDump / FILETIME). Off on wasm.
+set(RTS_CRASHDUMP_ENABLE OFF CACHE BOOL "" FORCE)

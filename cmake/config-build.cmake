@@ -87,12 +87,16 @@ if(MSVC)
     target_compile_definitions(core_config INTERFACE _CRT_NONSTDC_NO_WARNINGS _CRT_SECURE_NO_WARNINGS $<$<CONFIG:DEBUG>:_DEBUG_CRT>)
 endif()
 
-if(UNIX)
+if(UNIX AND NOT EMSCRIPTEN)
     target_compile_definitions(core_config INTERFACE _UNIX)
     # Ubuntu 24.04+ and macOS have strlcpy/strlcat/wcslcpy/wcslcat in libc
     # GeneralsX @TheSuperHackers @build BenderAI 11/02/2026 Added guards for glibc 2.38+
-    target_compile_definitions(core_config INTERFACE 
+    target_compile_definitions(core_config INTERFACE
         HAVE_STRLCPY HAVE_STRLCAT HAVE_WCSLCPY HAVE_WCSLCAT)
+elseif(EMSCRIPTEN)
+    # GeneralsX @build dx8wasm - emscripten's musl has strlcpy/strlcat but NOT the
+    # wide-char wcslcpy/wcslcat; let stringex.h's inline fallbacks provide those.
+    target_compile_definitions(core_config INTERFACE _UNIX HAVE_STRLCPY HAVE_STRLCAT)
 endif()
 
 if(RTS_BUILD_OPTION_DEBUG)

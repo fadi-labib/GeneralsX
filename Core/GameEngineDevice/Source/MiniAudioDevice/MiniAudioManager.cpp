@@ -63,11 +63,15 @@
 #include "GameLogic/FPUControl.h"
 
 #include "Common/file.h"
+// GeneralsX @build dx8wasm - audio file decoding uses FFmpeg (libavcodec), which
+// is heavy to build for wasm; deferred to the runtime plan. Skip on Emscripten.
+#ifndef __EMSCRIPTEN__
 #include "VideoDevice/FFmpeg/FFmpegFile.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 }
+#endif
 
 #ifdef _INTERNAL
 //#pragma optimize("", off)
@@ -324,6 +328,17 @@ void MiniAudioManager::playAudioEvent(AudioEventRTS *event)
 		break;
 	}
 
+	// Decode all audio frames into a buffer
+	std::vector<uint8_t> pcmData;
+	int sampleRate = 0;
+	int channels = 0;
+	int bytesPerSample = 0;
+
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - FFmpeg audio decode deferred (runtime plan). Leave
+	// pcmData empty; the empty-check below releases the audio and returns cleanly.
+	DEBUG_LOG(("MiniAudio: audio decode not yet available on wasm: %s\n", fileToPlay.str()));
+#else
 	// Use FFmpeg to decode the file into PCM, then feed to miniaudio.
 	// This avoids miniaudio's built-in decoders which hang on MP3 via VFS.
 	File *file = TheFileSystem->openFile(fileToPlay.str());
@@ -340,12 +355,6 @@ void MiniAudioManager::playAudioEvent(AudioEventRTS *event)
 		releasePlayingAudio(audio);
 		return;
 	}
-
-	// Decode all audio frames into a buffer
-	std::vector<uint8_t> pcmData;
-	int sampleRate = 0;
-	int channels = 0;
-	int bytesPerSample = 0;
 
 	auto onFrame = [&](AVFrame *frame, int stream_idx, int stream_type, void *user_data) {
 		if (stream_type != AVMEDIA_TYPE_AUDIO) return;
@@ -379,6 +388,7 @@ void MiniAudioManager::playAudioEvent(AudioEventRTS *event)
 	// Always delete ffmpegFile after decoding is complete
 	delete ffmpegFile;
 	ffmpegFile = NULL;
+#endif // __EMSCRIPTEN__
 
 	if (pcmData.empty() || sampleRate == 0 || bytesPerSample == 0) {
 		DEBUG_LOG(("MiniAudio: No audio data decoded from: %s\n", fileToPlay.str()));

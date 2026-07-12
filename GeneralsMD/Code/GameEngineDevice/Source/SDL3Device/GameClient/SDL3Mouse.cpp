@@ -40,7 +40,9 @@
 #include "GameClient/InGameUI.h"
 // GeneralsX @bugfix BenderAI 22/02/2026 Add SDL3_image for cursor loading
 // SDL3_image now finds system libpng via pkg-config (CMAKE_PREFIX_PATH reordered in cmake/sdl3.cmake)
+#ifndef __EMSCRIPTEN__
 #include <SDL3_image/SDL_image.h>
+#endif
 // GeneralsX @bugfix BenderAI 22/02/2026 Add array header for AnimatedCursor
 #include <array>
 // GeneralsX @bugfix BenderAI 22/02/2026 Add file system includes for cursor loading
@@ -247,7 +249,14 @@ AnimatedCursor* SDL3Mouse::loadCursorFromFile(const char* filepath)
 				{
 					const void *frame_buffer = getChunkData(frame);
 					SDL_IOStream *io_stream = SDL_IOFromConstMem(frame_buffer, frame->size);
+#ifdef __EMSCRIPTEN__
+					// GeneralsX @build dx8wasm - no SDL3_image on wasm; .ico cursor
+					// decoding is a runtime asset concern (later plan).
+					(void)io_stream;
+					SDL_Surface *surface = cursor->m_frameSurfaces[frame_index] = NULL;
+#else
 					SDL_Surface *surface = cursor->m_frameSurfaces[frame_index] = IMG_LoadTyped_IO(io_stream, true, "ico");
+#endif
 
 					if (!surface)
 					{

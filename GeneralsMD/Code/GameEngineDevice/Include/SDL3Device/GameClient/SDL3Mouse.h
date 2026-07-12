@@ -31,7 +31,11 @@
 
 // SYSTEM INCLUDES
 #include <SDL3/SDL.h>
+// GeneralsX @build dx8wasm - SDL3_image (animated-cursor loading) is skipped on
+// wasm; cursor assets are a runtime concern (later plan).
+#ifndef __EMSCRIPTEN__
 #include <SDL3_image/SDL_image.h>
+#endif
 #include <array>
 
 // USER INCLUDES
