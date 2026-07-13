@@ -510,6 +510,11 @@ void ShowControlBar( Bool immediate )
 		TheControlBar->switchControlBarStage(CONTROL_BAR_STAGE_DEFAULT);
 		TheControlBar->setScaledViewportHeight();
 
+#ifdef __EMSCRIPTEN__
+		// The slide-in animation leaves the bar off-screen until the animate manager
+		// ticks; force immediate on wasm so the HUD is visible right away.
+		immediate = TRUE;
+#endif
 		if (TheControlBar->m_animateWindowManager && !immediate)
 		{
 			TheControlBar->m_animateWindowManager->reset();
