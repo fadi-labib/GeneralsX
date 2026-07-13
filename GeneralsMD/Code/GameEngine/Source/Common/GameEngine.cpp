@@ -104,6 +104,7 @@
 #include "GameClient/Drawable.h"
 #include "GameClient/GUICallbacks.h"
 
+#include "GameNetwork/GameInfo.h"
 #include "GameNetwork/NetworkInterface.h"
 #include "GameNetwork/WOLBrowser/WebBrowser.h"
 #include "GameNetwork/LANAPI.h"
@@ -821,6 +822,69 @@ void GameEngine::init()
 			{
 				TheWritableGlobalData->m_shellMapOn = FALSE;
 				TheWritableGlobalData->m_playIntro = FALSE;
+
+#ifdef __EMSCRIPTEN__
+				// Skip the logo/sizzle movie + "after intro" shell path entirely; on
+				// wasm the Bink stub never finishes, which parks GameClient::update in
+				// the movie branch (line "if(m_playIntro||m_afterIntro){DRAW;return;}")
+				// so the in-game world is never drawn. Go straight to gameplay.
+				TheWritableGlobalData->m_playSizzle = FALSE;
+				TheWritableGlobalData->m_afterIntro = FALSE;
+				// GeneralsX @build dx8wasm - a bare -file launch loads the map with no
+				// armies (GAME_SINGLE_PLAYER + null TheGameInfo). Build a minimal
+				// 2-player skirmish (human USA vs Easy-AI China) so units actually
+				// spawn and the game is playable. Sequence adapted from the Start path
+				// in SkirmishGameOptionsMenu.cpp (init/reset/enterGame, two slots,
+				// startGame, MSG_NEW_GAME(GAME_SKIRMISH)).
+				// The full map cache is normally populated when a map-select menu
+				// opens; at engine-init launch time only the static MapCache.ini
+				// subset is loaded, so scan now (needed for start-position waypoints).
+				if (TheMapCache)
+					TheMapCache->updateCache();
+
+				if (!TheSkirmishGameInfo)
+					TheSkirmishGameInfo = NEW SkirmishGameInfo;
+				TheSkirmishGameInfo->init();
+				TheSkirmishGameInfo->clearSlotList();
+				TheSkirmishGameInfo->reset();
+				TheSkirmishGameInfo->setLocalIP(TheSkirmishGameInfo->getSlot(0)->getIP());
+				TheSkirmishGameInfo->enterGame();
+
+				const Int usaTmpl   = ThePlayerTemplateStore->getTemplateNumByName("FactionAmerica");
+				const Int chinaTmpl = ThePlayerTemplateStore->getTemplateNumByName("FactionChina");
+
+				GameSlot humanSlot;
+				humanSlot.setState(SLOT_PLAYER, UnicodeString(L"Player"));
+				humanSlot.setColor(0);
+				humanSlot.setPlayerTemplate(usaTmpl);
+				humanSlot.setStartPos(0);       // explicit valid pos avoids the random-assign while-loops
+				humanSlot.setTeamNumber(-1);    // -1 => no team (free-for-all: they fight)
+				TheSkirmishGameInfo->setSlot(0, humanSlot);
+
+				GameSlot aiSlot;
+				aiSlot.setState(SLOT_EASY_AI);
+				aiSlot.setColor(1);
+				aiSlot.setPlayerTemplate(chinaTmpl);
+				aiSlot.setStartPos(1);
+				aiSlot.setTeamNumber(-1);
+				TheSkirmishGameInfo->setSlot(1, aiSlot);
+
+				TheSkirmishGameInfo->setMap(TheGlobalData->m_initialFile);
+				const MapMetaData *md = TheMapCache ? TheMapCache->findMap(TheGlobalData->m_initialFile) : NULL;
+				if (md) { TheSkirmishGameInfo->setMapCRC(md->m_CRC); TheSkirmishGameInfo->setMapSize(md->m_filesize); }
+				else    { TheSkirmishGameInfo->setMapCRC(0); TheSkirmishGameInfo->setMapSize(0); }
+				TheSkirmishGameInfo->setSeed(1);
+				TheSkirmishGameInfo->setStartingCash(TheGlobalData->m_defaultStartingCash);
+				TheSkirmishGameInfo->startGame(0);
+				InitRandom(TheSkirmishGameInfo->getSeed());
+
+				TheWritableGlobalData->m_mapName = TheGlobalData->m_initialFile;
+				GameMessage *msg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
+				msg->appendIntegerArgument(GAME_SKIRMISH);
+				msg->appendIntegerArgument(DIFFICULTY_NORMAL);
+				msg->appendIntegerArgument(0);
+				msg->appendIntegerArgument(60);   // FPS limit
+#else
 				TheWritableGlobalData->m_pendingFile = TheGlobalData->m_initialFile;
 
 				// shutdown the top, but do not pop it off the stack
@@ -832,6 +896,7 @@ void GameEngine::init()
 				msg->appendIntegerArgument(DIFFICULTY_NORMAL);
 				msg->appendIntegerArgument(0);
 				InitRandom(0);
+#endif
 			}
 		}
 
@@ -848,7 +913,9 @@ void GameEngine::init()
 			}
 		}
 
-		if(!TheGlobalData->m_playIntro)
+		// On a -file launch we skip the intro/shell and go straight to the game,
+		// so don't force m_afterIntro back on (see the skirmish setup above).
+		if(!TheGlobalData->m_playIntro && TheGlobalData->m_initialFile.isEmpty())
 			TheWritableGlobalData->m_afterIntro = TRUE;
 
 	}
@@ -872,7 +939,7 @@ void GameEngine::init()
 		RELEASE_CRASH(("Uncaught Exception during initialization."));
 	}
 
-	if(!TheGlobalData->m_playIntro)
+	if(!TheGlobalData->m_playIntro && TheGlobalData->m_initialFile.isEmpty())
 		TheWritableGlobalData->m_afterIntro = TRUE;
 
 	resetSubsystems();
