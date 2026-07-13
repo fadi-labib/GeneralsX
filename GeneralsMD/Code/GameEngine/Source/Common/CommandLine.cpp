@@ -687,7 +687,11 @@ Int parseDisplayDebug(char *args[], int)
 
 	return 1;
 }
+#endif
 
+// GeneralsX @build dx8wasm - parseFile is needed by the browser (release) build to
+// launch a map from the command line, so it lives outside the RTS_DEBUG guard.
+#if defined(RTS_DEBUG) || defined(__EMSCRIPTEN__)
 Int parseFile(char *args[], int num)
 {
 	if (num > 1)
@@ -697,6 +701,9 @@ Int parseFile(char *args[], int num)
 	}
 	return 2;
 }
+#endif
+
+#if defined(RTS_DEBUG)
 
 
 Int parsePreloadEverything( char *args[], int num )
@@ -1306,6 +1313,12 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-updateImages", parseUpdateImages },
 	{ "-showTeamDot", parseShowTeamDot },
 	{ "-extraLogging", parseExtraLogging },
+#endif
+	// GeneralsX @build dx8wasm - -file/-map are RTS_DEBUG-only above; the browser
+	// build is a release config, so re-enable command-line map launch here.
+#if defined(__EMSCRIPTEN__) && !defined(RTS_DEBUG)
+	{ "-file", parseFile },
+	{ "-map", parseMapName },
 #endif
 
 #ifdef DEBUG_LOGGING
