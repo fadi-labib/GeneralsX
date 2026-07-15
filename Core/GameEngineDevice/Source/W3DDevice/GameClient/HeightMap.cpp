@@ -314,6 +314,16 @@ Int HeightMapRenderObjClass::updateVB(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *
 	constexpr const Int cellOffset = 1;
 
 	REF_PTR_SET(m_map, pMap);	//update our heightmap pointer in case it changed since last call.
+#ifdef __EMSCRIPTEN__
+	// The terrain lighting working-set (m_terrainAmbient/Diffuse/LightPos) is copied from
+	// m_terrainLighting[tod] by setTimeOfDay(). On wasm the map's lighting lands in
+	// m_terrainLighting AFTER the constructor's one setTimeOfDay ran, and nothing re-syncs
+	// the working copy — so the bake reads zeros and terrain renders black. Re-sync from
+	// the (now-loaded) source before baking. Idempotent; staticLightingChanged re-bakes on
+	// any later time-of-day change.
+	if (TheWritableGlobalData)
+		TheWritableGlobalData->setTimeOfDay(TheGlobalData->m_timeOfDay);
+#endif
 	if (m_vertexBufferTiles && pMap)
 	{
 #ifdef RTS_DEBUG

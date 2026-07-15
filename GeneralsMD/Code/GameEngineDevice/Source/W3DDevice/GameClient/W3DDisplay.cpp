@@ -559,6 +559,13 @@ static void SDL3_ApplyWindowModeForRenderConfig(Bool windowed, Int renderWidth, 
 	extern SDL_Window* TheSDL3Window;
 	if (!TheSDL3Window) return;
 
+#ifdef __EMSCRIPTEN__
+	// Browser fullscreen requires a user gesture, and each toggle resizes the canvas,
+	// which shifts the mouse coordinate mapping (clicks land differently every time) and
+	// causes a click->fullscreen->revert flicker. Always stay windowed on wasm.
+	windowed = TRUE;
+#endif
+
 	if (!windowed) {
 		if (!SDL_SetWindowFullscreen(TheSDL3Window, false)) {
 			fprintf(stderr, "WARNING: SDL_SetWindowFullscreen(false) failed: %s\n", SDL_GetError());

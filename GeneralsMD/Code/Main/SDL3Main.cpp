@@ -37,6 +37,9 @@
 #include <cstdio>
 #include <unistd.h>   // _exit()
 #include <glob.h>     // glob() for Vulkan ICD discovery
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 // USER INCLUDES (match WinMain.cpp pattern)
 #include "Lib/BaseType.h"
@@ -293,6 +296,11 @@ int main(int argc, char* argv[])
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 		SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+		SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);   // stencil-shadow volumes need it
+		// Opaque canvas: terrain's base pass writes vertex alpha=0. With an alpha-enabled
+		// (default) WebGL canvas, alpha=0 fragments composite transparent and the page
+		// shows through -> terrain looks black. ALPHA_SIZE=0 makes the canvas opaque.
+		SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
 		TheSDL3Window = SDL_CreateWindow(
 			"Command & Conquer Generals: Zero Hour",
 			1024, 768, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
@@ -309,6 +317,38 @@ int main(int argc, char* argv[])
 		}
 		SDL_GL_MakeCurrent(TheSDL3Window, glctx);
 		fprintf(stderr, "INFO: SDL3 GL ES3 window + context created\n");
+
+		// Mouse accuracy: keep every coordinate space equal to the browser viewport.
+		// Resize the SDL window/canvas backing to the real viewport, then inject
+		// -xres/-yres = the canvas pixel size so the engine's internal resolution (which
+		// scaleMouseCoordinates divides into the click position) matches 1:1. Without this
+		// the internal res stays a fixed 1024x768 unrelated to the canvas the browser
+		// composites at DPR, and clicks drift. Ported from Generals-WebAssembly WebMain.cpp.
+		{
+			int vpW = MAIN_THREAD_EM_ASM_INT({ return window.innerWidth; });
+			int vpH = MAIN_THREAD_EM_ASM_INT({ return window.innerHeight; });
+			if (vpW >= 640 && vpH >= 480) SDL_SetWindowSize(TheSDL3Window, vpW, vpH);
+
+			bool userSetRes = false;
+			for (int i = 1; i < __argc; ++i)
+				if (!strcmp(__argv[i], "-xres") || !strcmp(__argv[i], "-yres")) { userSetRes = true; break; }
+
+			// Inject the internal resolution as the CSS viewport size (NOT device pixels from
+			// SDL_GetWindowSizeInPixels). Mouse events arrive in CSS pixels; using device px
+			// here (DPR-scaled) made the vertical axis mismatch and clicks shifted vertically.
+			int winW = vpW, winH = vpH;
+			if (!userSetRes && winW >= 640 && winH >= 480) {
+				static char xv[16], yv[16], xf[] = "-xres", yf[] = "-yres";
+				static char* nargv[64];
+				snprintf(xv, sizeof(xv), "%d", winW & ~1);
+				snprintf(yv, sizeof(yv), "%d", winH & ~1);
+				int n = 0;
+				for (int i = 0; i < __argc && n < 59; ++i) nargv[n++] = __argv[i];
+				nargv[n++] = xf; nargv[n++] = xv; nargv[n++] = yf; nargv[n++] = yv; nargv[n] = nullptr;
+				__argv = nargv; __argc = n;
+				fprintf(stderr, "INFO: Web internal resolution set to %sx%s\n", xv, yv);
+			}
+		}
 #else
 		// Set DXVK WSI driver before loading Vulkan
 		setenv("DXVK_WSI_DRIVER", "SDL3", 1);
