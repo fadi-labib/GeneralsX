@@ -66,6 +66,9 @@
 
 #include "GameLogic/AIPathfind.h"
 #include "GameLogic/GameLogic.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>   // emscripten_get_now for the -stress partition sub-phase profiler
+#endif
 #include "GameLogic/Object.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/BodyModule.h"
@@ -2796,12 +2799,23 @@ void PartitionManager::update()
 			m_updatedSinceLastReset = true;
 		}
 
+#ifdef __EMSCRIPTEN__
+		// -stress partition sub-phase profiler: separate dirty-loop (cell remap + collision
+		// gather) / contact resolution / shroud, and count dirty modules processed, to find
+		// what scales with unit count/density and drives the slowdown. Gated + throttled.
+		const bool p_dbg = (TheGlobalData && TheGlobalData->m_wasmStressSkirmish);
+		int p_dirty = 0;
+		double p_t = p_dbg ? emscripten_get_now() : 0.0, p_dirtyMs = 0.0, p_contactMs = 0.0, p_shroudMs = 0.0;
+#endif
 		PartitionContactList ctList;
 		TheContactList = &ctList;
 		while (m_dirtyModules)
 		{
 #ifdef INTENSE_DEBUG
 			++cc;
+#endif
+#ifdef __EMSCRIPTEN__
+			++p_dirty;
 #endif
 
 			// save it.
@@ -2828,13 +2842,27 @@ void PartitionManager::update()
 			}
 		}
 
+#ifdef __EMSCRIPTEN__
+		if (p_dbg) { p_dirtyMs = emscripten_get_now() - p_t; p_t = emscripten_get_now(); }
+#endif
 		ctList.processContactList();
 #ifdef INTENSE_DEBUG
 		DEBUG_ASSERTLOG(cc==0,("updated partition info for %d objects",cc));
 #endif
 		TheContactList = nullptr;
+#ifdef __EMSCRIPTEN__
+		if (p_dbg) { p_contactMs = emscripten_get_now() - p_t; p_t = emscripten_get_now(); }
+#endif
 
 		processPendingUndoShroudRevealQueue();
+#ifdef __EMSCRIPTEN__
+		if (p_dbg) {
+			p_shroudMs = emscripten_get_now() - p_t;
+			if (TheGameLogic && (TheGameLogic->getFrame() % 120) == 0)
+				fprintf(stderr, "[PERF warn] partition: dirtyLoop=%.2f contacts=%.2f shroud=%.2f (ms) dirtyModules=%d frame=%u\n",
+					p_dirtyMs, p_contactMs, p_shroudMs, p_dirty, TheGameLogic->getFrame());
+		}
+#endif
 	}
 
 #if defined(RTS_DEBUG)

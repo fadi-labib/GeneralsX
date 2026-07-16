@@ -1160,8 +1160,10 @@ static void wasm_stress_spawn()
 		Object* u = TheThingFactory->newObject(tmpl, local->getDefaultTeam());
 		if (!u) break;
 		Coord3D p = *ref;
-		p.x += (Real)((s_spawned % 20) * 12 - 120);
-		p.y += (Real)(((s_spawned / 20) % 20) * 12 - 120);
+		// Disperse over a wide area (48-unit spacing => no overlap) so unit-separation
+		// physics doesn't create an artificial collision storm; representative of a real army.
+		p.x += (Real)((s_spawned % 20) * 48 - 480);
+		p.y += (Real)(((s_spawned / 20) % 20) * 48 - 480);
 		u->setPosition(&p);
 	}
 	fprintf(stderr, "[PERF warn] stress-spawn: total spawned=%d (gameFrame %u)\n", s_spawned, f);
