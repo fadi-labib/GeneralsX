@@ -139,6 +139,10 @@ FILE *g_UT_commaLog=nullptr;
 extern void externalAddTree(Coord3D location, Real scale, Real angle, AsciiString name);
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>   // emscripten_get_now for the -stress logic-phase profiler
+#endif
+
 
 
 
@@ -3770,6 +3774,16 @@ void GameLogic::update()
 
 	setFPMode();
 
+#ifdef __EMSCRIPTEN__
+	// -stress logic-phase profiler: attribute per-frame logic cost to the phases that
+	// scale with unit count, to narrow the in-game slowdown. Gated + throttled; no-op otherwise.
+	const bool s_stressDbg = (TheGlobalData && TheGlobalData->m_wasmStressSkirmish);
+	double s_tAll0 = s_stressDbg ? emscripten_get_now() : 0.0;
+	double s_tMark = 0.0, s_tSleepy = 0.0, s_tAI = 0.0, s_tBuild = 0.0, s_tPart = 0.0;
+	#define STRESS_MARK() do { if (s_stressDbg) s_tMark = emscripten_get_now(); } while (0)
+	#define STRESS_LAP(acc) do { if (s_stressDbg) acc = emscripten_get_now() - s_tMark; } while (0)
+#endif
+
 	/// @todo remove this hack
 	if ( m_startNewGame && !TheDisplay->isMoviePlaying())
 	{
@@ -3908,6 +3922,9 @@ void GameLogic::update()
 	}
 #endif
 
+#ifdef __EMSCRIPTEN__
+	STRESS_MARK();
+#endif
 	{
 		while (!m_sleepyUpdates.empty())
 		{
@@ -3959,22 +3976,44 @@ void GameLogic::update()
 		}
 	}
 
+#ifdef __EMSCRIPTEN__
+	STRESS_LAP(s_tSleepy);
+#endif
+
 	validateSleepyUpdate();
 
 	// update the Artificial Intelligence system
+#ifdef __EMSCRIPTEN__
+	STRESS_MARK();
+#endif
 	{
 		TheAI->UPDATE();
 	}
+#ifdef __EMSCRIPTEN__
+	STRESS_LAP(s_tAI);
+#endif
 
 	// production updates
+#ifdef __EMSCRIPTEN__
+	STRESS_MARK();
+#endif
 	{
 		TheBuildAssistant->UPDATE();
 	}
+#ifdef __EMSCRIPTEN__
+	STRESS_LAP(s_tBuild);
+#endif
 
 	// update partition info
+#ifdef __EMSCRIPTEN__
+	STRESS_MARK();
+#endif
 	{
 		ThePartitionManager->UPDATE();
 	}
+#ifdef __EMSCRIPTEN__
+	STRESS_LAP(s_tPart);
+#endif
 
 	//
 	// End of frame clean-up
@@ -4004,6 +4043,17 @@ void GameLogic::update()
 
 
 
+
+#ifdef __EMSCRIPTEN__
+	if (s_stressDbg && (now % 120) == 0) {
+		double total = emscripten_get_now() - s_tAll0;
+		double other = total - s_tSleepy - s_tAI - s_tBuild - s_tPart;
+		fprintf(stderr, "[PERF warn] logic-phases total=%.2f sleepy=%.2f ai=%.2f build=%.2f partition=%.2f other=%.2f (ms) objs=%d frame=%u\n",
+			total, s_tSleepy, s_tAI, s_tBuild, s_tPart, other, (int)getObjectCount(), now);
+	}
+	#undef STRESS_MARK
+	#undef STRESS_LAP
+#endif
 
 	// increment world time
 	if (!m_startNewGame)
