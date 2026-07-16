@@ -3780,6 +3780,7 @@ void GameLogic::update()
 	const bool s_stressDbg = (TheGlobalData && TheGlobalData->m_wasmStressSkirmish);
 	double s_tAll0 = s_stressDbg ? emscripten_get_now() : 0.0;
 	double s_tMark = 0.0, s_tSleepy = 0.0, s_tAI = 0.0, s_tBuild = 0.0, s_tPart = 0.0;
+	int s_sleepyRuns = 0;   // how many sleepy modules actually ran this frame (vs total pool)
 	#define STRESS_MARK() do { if (s_stressDbg) s_tMark = emscripten_get_now(); } while (0)
 	#define STRESS_LAP(acc) do { if (s_stressDbg) acc = emscripten_get_now() - s_tMark; } while (0)
 #endif
@@ -3961,6 +3962,9 @@ void GameLogic::update()
 				//DEBUG_LOG(("calling update %08lx (%d %d)...",update,update->friend_getNextCallFrame(),update->friend_getNextCallPhase()));
 				m_curUpdateModule = u;
 
+#ifdef __EMSCRIPTEN__
+				if (s_stressDbg) ++s_sleepyRuns;
+#endif
 				sleepLen = u->update();
 				DEBUG_ASSERTCRASH(sleepLen > 0, ("you may not return 0 from update"));
 				if (sleepLen < 1)
@@ -4048,8 +4052,8 @@ void GameLogic::update()
 	if (s_stressDbg && (now % 120) == 0) {
 		double total = emscripten_get_now() - s_tAll0;
 		double other = total - s_tSleepy - s_tAI - s_tBuild - s_tPart;
-		fprintf(stderr, "[PERF warn] logic-phases total=%.2f sleepy=%.2f ai=%.2f build=%.2f partition=%.2f other=%.2f (ms) objs=%d frame=%u\n",
-			total, s_tSleepy, s_tAI, s_tBuild, s_tPart, other, (int)getObjectCount(), now);
+		fprintf(stderr, "[PERF warn] logic-phases total=%.2f sleepy=%.2f ai=%.2f build=%.2f partition=%.2f other=%.2f (ms) sleepyRuns=%d/%d objs=%d frame=%u\n",
+			total, s_tSleepy, s_tAI, s_tBuild, s_tPart, other, s_sleepyRuns, (int)m_sleepyUpdates.size(), (int)getObjectCount(), now);
 	}
 	#undef STRESS_MARK
 	#undef STRESS_LAP
