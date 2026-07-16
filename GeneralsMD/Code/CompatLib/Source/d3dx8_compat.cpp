@@ -181,6 +181,47 @@ D3DXLoadSurfaceFromSurface(
 			pSrcSurface->UnlockRect();
 			return D3D_OK;
 		}
+		else if (descSrc.Format == D3DFMT_A1R5G5B5)
+		{
+			// GeneralsX @bugfix Box filter for A1R5G5B5: average 2x2 blocks.
+			// GLI's generate_mipmaps mangles 16-bit packed formats (see the A4R4G4B4
+			// and R5G6B5 workarounds above); the terrain texture atlas is A1R5G5B5,
+			// so without this its mip levels came out as cyan/green/black garbage
+			// that showed up minified on cliff cells (the "checkerboard tiles").
+			// Matches the macOS __APPLE__ path below exactly.
+			const uint16_t *src = (const uint16_t *)srcRect.pBits;
+			uint16_t *dst = (uint16_t *)destRect.pBits;
+			uint32_t srcPitch16 = srcRect.Pitch / 2;
+			uint32_t dstPitch16 = destRect.Pitch / 2;
+
+			for (uint32_t y = 0; y < descDest.Height; y++)
+			{
+				for (uint32_t x = 0; x < descDest.Width; x++)
+				{
+					uint32_t sx = x * 2;
+					uint32_t sy = y * 2;
+					uint16_t p00 = src[sy * srcPitch16 + sx];
+					uint16_t p10 = src[sy * srcPitch16 + sx + 1];
+					uint16_t p01 = src[(sy + 1) * srcPitch16 + sx];
+					uint16_t p11 = src[(sy + 1) * srcPitch16 + sx + 1];
+
+					// Extract and average each channel (A1 R5 G5 B5)
+					uint32_t r = (((p00 >> 10) & 0x1F) + ((p10 >> 10) & 0x1F) +
+					              ((p01 >> 10) & 0x1F) + ((p11 >> 10) & 0x1F) + 2) >> 2;
+					uint32_t g = (((p00 >> 5) & 0x1F) + ((p10 >> 5) & 0x1F) +
+					              ((p01 >> 5) & 0x1F) + ((p11 >> 5) & 0x1F) + 2) >> 2;
+					uint32_t b = ((p00 & 0x1F) + (p10 & 0x1F) +
+					              (p01 & 0x1F) + (p11 & 0x1F) + 2) >> 2;
+					// Alpha: majority vote (set if 2+ pixels have alpha set)
+					uint32_t a = ((p00 >> 15) + (p10 >> 15) + (p01 >> 15) + (p11 >> 15)) >= 2 ? 1 : 0;
+
+					dst[y * dstPitch16 + x] = (uint16_t)((a << 15) | (r << 10) | (g << 5) | b);
+				}
+			}
+			pDestSurface->UnlockRect();
+			pSrcSurface->UnlockRect();
+			return D3D_OK;
+		}
 	}
 	// Pick a compatible format
 	gli::format imageFormat = gli::format::FORMAT_RGBA8_UNORM_PACK8;
