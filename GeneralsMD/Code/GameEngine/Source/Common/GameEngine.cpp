@@ -40,6 +40,7 @@
 #include "Common/PlayerTemplate.h"
 #include "Common/Team.h"
 #include "Common/PlayerList.h"
+#include "Common/Player.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
 #include "Common/INI.h"
@@ -83,6 +84,7 @@
 #include "GameLogic/ObjectCreationList.h"
 #include "GameLogic/Weapon.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/Object.h"
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/RankInfo.h"
 #include "GameLogic/ScriptEngine.h"
@@ -1065,6 +1067,10 @@ Bool GameEngine::canUpdateRegularGameLogic()
 /// -----------------------------------------------------------------------------------------------
 DECLARE_PERF_TIMER(GameEngine_update)
 
+#ifdef __EMSCRIPTEN__
+static double g_wasmStressLogicMs = 0.0;   // last GameLogic::UPDATE() cost (ms), for the -stress perf log
+#endif
+
 /** -----------------------------------------------------------------------------------------------
  * Update the game engine by updating the GameClient and GameLogic singletons.
  */
@@ -1093,6 +1099,15 @@ void GameEngine::update()
 		// TheSuperHackers @info Ignores frozen time because the script engine needs updating in the logic update regardless.
 		if (canUpdateGameLogic())
 		{
+#ifdef __EMSCRIPTEN__
+			// Under -stress, isolate pure sim (logic) time from the render-inclusive frame so
+			// CPU-logic growth stays visible even when software rendering dominates wall-clock.
+			if (TheGlobalData && TheGlobalData->m_wasmStressSkirmish) {
+				double lt0 = emscripten_get_now();
+				TheGameLogic->UPDATE();
+				g_wasmStressLogicMs = emscripten_get_now() - lt0;
+			} else
+#endif
 			TheGameLogic->UPDATE();
 
 			if (!TheFramePacer->isTimeFrozen())
@@ -1111,6 +1126,47 @@ extern HWND ApplicationHWnd;
  * The "main loop" of the game engine. It will not return until the game exits.
  */
 #ifdef __EMSCRIPTEN__
+// -stress: grow the local player's army over time so per-frame CPU work accumulates,
+// giving the in-game slowdown a headless repro without fragile UI automation. Spawns
+// idle units near the local player's Command Center, in batches, capped. The AI-vs-AI
+// path can't be used (non-local players get no starting units in this port), so we
+// drive the local (human) player's unit count directly. No-op unless -stress is set.
+static void wasm_stress_spawn()
+{
+	if (!TheGlobalData || !TheGlobalData->m_wasmStressSkirmish) return;
+	if (!TheGameLogic || !TheGameLogic->isInGame() || !ThePlayerList || !TheThingFactory) return;
+
+	static UnsignedInt s_nextFrame = 300;   // let the base finish placing first
+	static int s_spawned = 0;
+	const int SPAWN_CAP = 400, BATCH = 20, PERIOD = 150;
+	UnsignedInt f = TheGameLogic->getFrame();
+	if (f < s_nextFrame || s_spawned >= SPAWN_CAP) return;
+	s_nextFrame = f + PERIOD;
+
+	Player* local = ThePlayerList->getLocalPlayer();
+	if (!local) return;
+	// Reference position: the local player's first owned object (its Command Center).
+	const Coord3D* ref = nullptr;
+	for (Object* o = TheGameLogic->getFirstObject(); o; o = o->getNextObject())
+		if (o->getControllingPlayer() == local) { ref = o->getPosition(); break; }
+	if (!ref) return;
+
+	const char* kCandidates[] = { "AmericaInfantryRanger", "AmericaVehicleHumvee", "AmericaInfantryMissileDefender" };
+	const ThingTemplate* tmpl = nullptr;
+	for (const char* nm : kCandidates) { tmpl = TheThingFactory->findTemplate(AsciiString(nm), FALSE); if (tmpl) break; }
+	if (!tmpl) { fprintf(stderr, "[PERF warn] stress-spawn: no unit template found\n"); s_spawned = SPAWN_CAP; return; }
+
+	for (int i = 0; i < BATCH && s_spawned < SPAWN_CAP; ++i, ++s_spawned) {
+		Object* u = TheThingFactory->newObject(tmpl, local->getDefaultTeam());
+		if (!u) break;
+		Coord3D p = *ref;
+		p.x += (Real)((s_spawned % 20) * 12 - 120);
+		p.y += (Real)(((s_spawned / 20) % 20) * 12 - 120);
+		u->setPosition(&p);
+	}
+	fprintf(stderr, "[PERF warn] stress-spawn: total spawned=%d (gameFrame %u)\n", s_spawned, f);
+}
+
 // One engine frame, driven by the browser's requestAnimationFrame. A blocking
 // while(!quit) loop never returns to the event loop, so rendered frames are never
 // composited to the canvas; emscripten_set_main_loop yields each frame so WebGL
@@ -1118,6 +1174,7 @@ extern HWND ApplicationHWnd;
 static void wasm_engine_frame()
 {
 	if (!TheGameEngine || TheGameEngine->getQuitting()) { emscripten_cancel_main_loop(); return; }
+	wasm_stress_spawn();
 	double pf_t0 = emscripten_get_now();
 	try { TheGameEngine->update(); }
 	catch (...) { emscripten_cancel_main_loop(); return; }
@@ -1133,8 +1190,8 @@ static void wasm_engine_frame()
 		{
 			int gf = (TheGameLogic && TheGameLogic->isInGame()) ? (int)TheGameLogic->getFrame() : -1;
 			int objs = TheGameLogic ? (int)TheGameLogic->getObjectCount() : -1;
-			fprintf(stderr, "[PERF warn] update() avg=%.2fms max=%.2fms /%d frames gameFrame=%d objects=%d\n",
-				pf_acc / pf_n, pf_max, pf_n, gf, objs);
+			fprintf(stderr, "[PERF warn] frame avg=%.2fms max=%.2fms logic=%.2fms /%d frames gameFrame=%d objects=%d\n",
+				pf_acc / pf_n, pf_max, g_wasmStressLogicMs, pf_n, gf, objs);
 			pf_n = 0; pf_acc = 0; pf_max = 0;
 		}
 	}
