@@ -701,6 +701,15 @@ Int parseFile(char *args[], int num)
 	}
 	return 2;
 }
+
+// GeneralsX @build dx8wasm - stress the -file skirmish (Brutal AI + huge starting cash)
+// so an army builds and fights fast, making the state-dependent in-game slowdown
+// reproduce in a headless capture. No-op without -file.
+Int parseStress(char *args[], int)
+{
+	TheWritableGlobalData->m_wasmStressSkirmish = TRUE;
+	return 1;
+}
 #endif
 
 #if defined(RTS_DEBUG)
@@ -1319,6 +1328,7 @@ static CommandLineParam paramsForEngineInit[] =
 #if defined(__EMSCRIPTEN__) && !defined(RTS_DEBUG)
 	{ "-file", parseFile },
 	{ "-map", parseMapName },
+	{ "-stress", parseStress },
 #endif
 
 #ifdef DEBUG_LOGGING

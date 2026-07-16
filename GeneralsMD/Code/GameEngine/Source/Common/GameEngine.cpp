@@ -861,8 +861,11 @@ void GameEngine::init()
 				humanSlot.setTeamNumber(-1);    // -1 => no team (free-for-all: they fight)
 				TheSkirmishGameInfo->setSlot(0, humanSlot);
 
+				// -stress: Brutal AI so it builds and attacks fast, making the
+				// state-dependent in-game slowdown reproduce in a headless capture.
+				const Bool stress = TheGlobalData->m_wasmStressSkirmish;
 				GameSlot aiSlot;
-				aiSlot.setState(SLOT_EASY_AI);
+				aiSlot.setState(stress ? SLOT_BRUTAL_AI : SLOT_EASY_AI);
 				aiSlot.setColor(1);
 				aiSlot.setPlayerTemplate(chinaTmpl);
 				aiSlot.setStartPos(1);
@@ -874,7 +877,8 @@ void GameEngine::init()
 				if (md) { TheSkirmishGameInfo->setMapCRC(md->m_CRC); TheSkirmishGameInfo->setMapSize(md->m_filesize); }
 				else    { TheSkirmishGameInfo->setMapCRC(0); TheSkirmishGameInfo->setMapSize(0); }
 				TheSkirmishGameInfo->setSeed(1);
-				TheSkirmishGameInfo->setStartingCash(TheGlobalData->m_defaultStartingCash);
+				Money stressCash; stressCash.setStartingCash(500000);
+				TheSkirmishGameInfo->setStartingCash(stress ? stressCash : TheGlobalData->m_defaultStartingCash);
 				TheSkirmishGameInfo->startGame(0);
 				InitRandom(TheSkirmishGameInfo->getSeed());
 
@@ -1114,9 +1118,26 @@ extern HWND ApplicationHWnd;
 static void wasm_engine_frame()
 {
 	if (!TheGameEngine || TheGameEngine->getQuitting()) { emscripten_cancel_main_loop(); return; }
+	double pf_t0 = emscripten_get_now();
 	try { TheGameEngine->update(); }
 	catch (...) { emscripten_cancel_main_loop(); return; }
 	TheFramePacer->update();
+	// Under -stress (headless perf repro) report per-frame update() cost vs game frame,
+	// so a rising trend during the AI battle is visible. Silent in normal runs.
+	if (TheGlobalData && TheGlobalData->m_wasmStressSkirmish)
+	{
+		static int pf_n = 0; static double pf_acc = 0, pf_max = 0;
+		double dt = emscripten_get_now() - pf_t0;
+		pf_acc += dt; if (dt > pf_max) pf_max = dt; ++pf_n;
+		if (pf_n >= 120)
+		{
+			int gf = (TheGameLogic && TheGameLogic->isInGame()) ? (int)TheGameLogic->getFrame() : -1;
+			int objs = TheGameLogic ? (int)TheGameLogic->getObjectCount() : -1;
+			fprintf(stderr, "[PERF warn] update() avg=%.2fms max=%.2fms /%d frames gameFrame=%d objects=%d\n",
+				pf_acc / pf_n, pf_max, pf_n, gf, objs);
+			pf_n = 0; pf_acc = 0; pf_max = 0;
+		}
+	}
 }
 #endif
 
