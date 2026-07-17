@@ -3779,7 +3779,7 @@ void GameLogic::update()
 	// scale with unit count, to narrow the in-game slowdown. Gated + throttled; no-op otherwise.
 	const bool s_stressDbg = (TheGlobalData && TheGlobalData->m_wasmStressSkirmish);
 	double s_tAll0 = s_stressDbg ? emscripten_get_now() : 0.0;
-	double s_tMark = 0.0, s_tSleepy = 0.0, s_tAI = 0.0, s_tBuild = 0.0, s_tPart = 0.0;
+	double s_tMark = 0.0, s_tSleepy = 0.0, s_tAI = 0.0, s_tBuild = 0.0, s_tPart = 0.0, s_tCRC = 0.0;
 	int s_sleepyRuns = 0;   // how many sleepy modules actually ran this frame (vs total pool)
 	#define STRESS_MARK() do { if (s_stressDbg) s_tMark = emscripten_get_now(); } while (0)
 	#define STRESS_LAP(acc) do { if (s_stressDbg) acc = emscripten_get_now() - s_tMark; } while (0)
@@ -3854,6 +3854,9 @@ void GameLogic::update()
 	Bool generateForSolo = isSoloGameOrReplay && ((m_frame % REPLAY_CRC_INTERVAL) == 0);
 #endif // DEBUG_CRC
 
+#ifdef __EMSCRIPTEN__
+	STRESS_MARK();
+#endif
 	if (generateForSolo || generateForMP)
 	{
 		m_CRC = getCRC( CRC_RECALC );
@@ -3873,6 +3876,9 @@ void GameLogic::update()
 
 		DEBUG_LOG(("Appended %sCRC on frame %d: %8.8X", isPlayback ? "Playback " : "", m_frame, m_CRC));
 	}
+#ifdef __EMSCRIPTEN__
+	STRESS_LAP(s_tCRC);
+#endif
 
 	// collect stats
 	if(TheStatsCollector)
@@ -4049,11 +4055,21 @@ void GameLogic::update()
 
 
 #ifdef __EMSCRIPTEN__
-	if (s_stressDbg && (now % 120) == 0) {
+	if (s_stressDbg && (now % 100) == 0) {   // 100 aligns with REPLAY_CRC_INTERVAL so crc cost is captured
 		double total = emscripten_get_now() - s_tAll0;
-		double other = total - s_tSleepy - s_tAI - s_tBuild - s_tPart;
-		fprintf(stderr, "[PERF warn] logic-phases total=%.2f sleepy=%.2f ai=%.2f build=%.2f partition=%.2f other=%.2f (ms) sleepyRuns=%d/%d objs=%d frame=%u\n",
-			total, s_tSleepy, s_tAI, s_tBuild, s_tPart, other, s_sleepyRuns, (int)m_sleepyUpdates.size(), (int)getObjectCount(), now);
+		double other = total - s_tSleepy - s_tAI - s_tBuild - s_tPart - s_tCRC;
+		fprintf(stderr, "[PERF warn] logic-phases total=%.2f sleepy=%.2f ai=%.2f build=%.2f partition=%.2f crc=%.2f other=%.2f (ms) sleepyRuns=%d/%d objs=%d frame=%u\n",
+			total, s_tSleepy, s_tAI, s_tBuild, s_tPart, s_tCRC, other, s_sleepyRuns, (int)m_sleepyUpdates.size(), (int)getObjectCount(), now);
+		if (ThePlayerList) {
+			KindOfMaskType none;
+			for (int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+				Player* pl = ThePlayerList->getNthPlayer(pi);
+				if (pl && pl->countObjects(none, none) > 0)
+					fprintf(stderr, "[PERF warn]   player %d skAI=%d local=%d type=%d objs=%d\n",
+						pi, pl->isSkirmishAIPlayer()?1:0, pl->isLocalPlayer()?1:0,
+						(int)pl->getPlayerType(), pl->countObjects(none, none));
+			}
+		}
 	}
 	#undef STRESS_MARK
 	#undef STRESS_LAP

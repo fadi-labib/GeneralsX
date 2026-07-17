@@ -1126,11 +1126,22 @@ extern HWND ApplicationHWnd;
  * The "main loop" of the game engine. It will not return until the game exits.
  */
 #ifdef __EMSCRIPTEN__
-// -stress: grow the local player's army over time so per-frame CPU work accumulates,
-// giving the in-game slowdown a headless repro without fragile UI automation. Spawns
-// idle units near the local player's Command Center, in batches, capped. The AI-vs-AI
-// path can't be used (non-local players get no starting units in this port), so we
-// drive the local (human) player's unit count directly. No-op unless -stress is set.
+// Resolve the first available template from a candidate list (missing ones return null).
+static const ThingTemplate* wasm_first_template(const char* const* names, int n)
+{
+	for (int i = 0; i < n; ++i) {
+		const ThingTemplate* t = TheThingFactory->findTemplate(AsciiString(names[i]), FALSE);
+		if (t) return t;
+	}
+	return nullptr;
+}
+
+// -stress: grow an army over time so per-frame CPU work accumulates, giving the in-game
+// slowdown a headless repro without fragile UI automation. Spawns near the local player's
+// Command Center in batches, capped. If a non-local playable opponent exists, spawns BOTH
+// sides intermixed and close so auto-acquire drives real COMBAT (weapons/projectiles/death/
+// collision) — the autonomous skirmish AI doesn't function in this port, so we script it.
+// No-op unless -stress is set.
 static void wasm_stress_spawn()
 {
 	if (!TheGlobalData || !TheGlobalData->m_wasmStressSkirmish) return;
@@ -1145,28 +1156,45 @@ static void wasm_stress_spawn()
 
 	Player* local = ThePlayerList->getLocalPlayer();
 	if (!local) return;
+	// Enemy = first non-local playable-side player (the opponent), for scripted combat.
+	Player* enemy = nullptr;
+	for (int i = 0; i < ThePlayerList->getPlayerCount(); ++i) {
+		Player* p = ThePlayerList->getNthPlayer(i);
+		if (p && p != local && p->isPlayableSide()) { enemy = p; break; }
+	}
+	// Force mutual hostility once so the two sides auto-acquire and actually fight
+	// (the -file skirmish leaves them non-hostile, so units otherwise stand idle).
+	static bool s_relSet = false;
+	if (enemy && !s_relSet) {
+		local->setPlayerRelationship(enemy, ENEMIES);
+		enemy->setPlayerRelationship(local, ENEMIES);
+		s_relSet = true;
+	}
 	// Reference position: the local player's first owned object (its Command Center).
 	const Coord3D* ref = nullptr;
 	for (Object* o = TheGameLogic->getFirstObject(); o; o = o->getNextObject())
 		if (o->getControllingPlayer() == local) { ref = o->getPosition(); break; }
 	if (!ref) return;
 
-	const char* kCandidates[] = { "AmericaInfantryRanger", "AmericaVehicleHumvee", "AmericaInfantryMissileDefender" };
-	const ThingTemplate* tmpl = nullptr;
-	for (const char* nm : kCandidates) { tmpl = TheThingFactory->findTemplate(AsciiString(nm), FALSE); if (tmpl) break; }
-	if (!tmpl) { fprintf(stderr, "[PERF warn] stress-spawn: no unit template found\n"); s_spawned = SPAWN_CAP; return; }
+	const char* usaC[] = { "AmericaInfantryRanger", "AmericaVehicleHumvee", "AmericaInfantryMissileDefender" };
+	const char* chiC[] = { "ChinaInfantryRedguard", "ChinaTankBattleMaster", "ChinaInfantryTankHunter" };
+	const ThingTemplate* usaT = wasm_first_template(usaC, 3);
+	const ThingTemplate* chiT = wasm_first_template(chiC, 3);
+	if (!usaT) { fprintf(stderr, "[PERF warn] stress-spawn: no unit template found\n"); s_spawned = SPAWN_CAP; return; }
 
 	for (int i = 0; i < BATCH && s_spawned < SPAWN_CAP; ++i, ++s_spawned) {
-		Object* u = TheThingFactory->newObject(tmpl, local->getDefaultTeam());
+		// Alternate sides when we have an opponent + a foe template, so enemies are
+		// interleaved and (at 40-unit spacing) within acquisition range -> they fight.
+		const bool foe = enemy && chiT && (s_spawned & 1);
+		Object* u = TheThingFactory->newObject(foe ? chiT : usaT, (foe ? enemy : local)->getDefaultTeam());
 		if (!u) break;
 		Coord3D p = *ref;
-		// Disperse over a wide area (48-unit spacing => no overlap) so unit-separation
-		// physics doesn't create an artificial collision storm; representative of a real army.
-		p.x += (Real)((s_spawned % 20) * 48 - 480);
-		p.y += (Real)(((s_spawned / 20) % 20) * 48 - 480);
+		p.x += (Real)((s_spawned % 20) * 40 - 400);
+		p.y += (Real)(((s_spawned / 20) % 20) * 40 - 400);
 		u->setPosition(&p);
 	}
-	fprintf(stderr, "[PERF warn] stress-spawn: total spawned=%d (gameFrame %u)\n", s_spawned, f);
+	fprintf(stderr, "[PERF warn] stress-spawn: total=%d combat=%s (gameFrame %u)\n",
+		s_spawned, (enemy && chiT) ? "yes" : "no", f);
 }
 
 // One engine frame, driven by the browser's requestAnimationFrame. A blocking
