@@ -35,6 +35,10 @@
  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 #include "render2dsentence.h"
+#ifdef __EMSCRIPTEN__
+#include <unistd.h>   // access() for the MEMFS font resolver
+#include <cctype>     // tolower()
+#endif
 #include "surfaceclass.h"
 #include "texture.h"
 #include "wwprofile.h"
@@ -1646,9 +1650,32 @@ const char *
 FontCharsClass::Locate_Font_FontConfig (const char *font_name)
 {
 #ifdef __EMSCRIPTEN__
-	// GeneralsX @build dx8wasm - no fontconfig on the web. Font files resolve from
-	// a bundled asset path in the runtime plan; until then, report no match.
-	(void)font_name;
+	// GeneralsX @build dx8wasm - no fontconfig on the web. Resolve font files from a
+	// bundled `fonts/` dir in MEMFS (embedded at link time), matched by normalized
+	// name (lowercase, spaces stripped) as fonts/<name>.ttf/.otf/.ttc, with
+	// fonts/arial.ttf as the universal fallback since the game UI is Arial-based.
+	// (Adapted from the Generals-WebAssembly fork's iOS/web resolver.)
+	char normalized[128];
+	int nlen = 0;
+	for (const char *p = font_name; *p != '\0' && nlen < (int)sizeof(normalized) - 1; ++p) {
+		if (*p == ' ') continue;
+		normalized[nlen++] = (char)tolower((unsigned char)*p);
+	}
+	normalized[nlen] = '\0';
+
+	static const char *extensions[] = { ".ttf", ".otf", ".ttc" };
+	char candidate[256];
+	for (size_t i = 0; i < sizeof(extensions) / sizeof(extensions[0]); ++i) {
+		snprintf(candidate, sizeof(candidate), "fonts/%s%s", normalized, extensions[i]);
+		if (access(candidate, R_OK) == 0) {
+			FreetypeFontPath = candidate;                 // StringClass copies (no dangling)
+			return FreetypeFontPath;
+		}
+	}
+	if (access("fonts/arial.ttf", R_OK) == 0) {
+		FreetypeFontPath = "fonts/arial.ttf";
+		return FreetypeFontPath;
+	}
 	return nullptr;
 #else
 	//

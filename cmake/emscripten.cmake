@@ -59,6 +59,13 @@ add_link_options(-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
 # file_packager bundle loaded at runtime, so the engine must include FS support.
 add_link_options(-sFORCE_FILESYSTEM=1)
 
+# Embed a TrueType font at fonts/arial.ttf in MEMFS. The web has no fontconfig, so
+# FontCharsClass::Locate_Font_FontConfig (render2dsentence.cpp) resolves fonts from
+# this bundled path (arial.ttf = universal fallback; the UI is Arial-based). Without
+# it FreeType loads no face and NO in-game text renders. LiberationSans is a
+# metric-compatible, freely-licensed Arial substitute.
+add_link_options("SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/Data/Fonts/arial.ttf@fonts/arial.ttf")
+
 # Feature flags the engine's option tree keys off. SDL3 comes from the
 # emscripten port at link time; audio deferred; math helpers via GLM/GLI.
 set(SAGE_USE_SDL3 ON  CACHE BOOL "" FORCE)
