@@ -844,6 +844,14 @@ void GameEngine::init()
 				if (TheMapCache)
 					TheMapCache->updateCache();
 
+				// The bare -file launch has no skirmish UI, so computer players are otherwise
+				// created as solo/scripted AI (AIPlayer) that never build a base -> the opponent
+				// just sits. Force skirmish AI (AISkirmishPlayer) so it builds and fights. This is
+				// exactly what AIData's ForceSkirmishAI flag is for ("...until the skirmish ui is
+				// done"). getAiData() is const; cast to set the one dev flag.
+				if (TheAI && TheAI->getAiData())
+					const_cast<TAiData*>(TheAI->getAiData())->m_forceSkirmishAI = TRUE;
+
 				if (!TheSkirmishGameInfo)
 					TheSkirmishGameInfo = NEW SkirmishGameInfo;
 				TheSkirmishGameInfo->init();
