@@ -2219,6 +2219,27 @@ AGAIN:
 				}
 #endif
 
+#ifdef __EMSCRIPTEN__
+				// Always-on FPS readout on the web (drawFPSStats is RTS_DEBUG-only, and the
+				// Release build the user runs has no debug stat display). Self-contained so it
+				// works without the debug-display plumbing. Top-left, yellow with a black drop.
+				{
+					static DisplayString *s_fps = nullptr;
+					if (s_fps == nullptr)
+					{
+						s_fps = TheDisplayStringManager->newDisplayString();
+						if (s_fps) s_fps->setFont( TheFontLibrary->getFont( "Arial", 12, TRUE ) );
+					}
+					if (s_fps)
+					{
+						UnicodeString u;
+						u.format( L"FPS %d", (Int)(m_averageFPS + 0.5f) );
+						s_fps->setText( u );
+						s_fps->draw( 6, 6, GameMakeColor(255,255,0,255), GameMakeColor(0,0,0,255) );
+					}
+				}
+#endif
+
 
 #if defined(RTS_DEBUG)
 				if (TheGlobalData->m_debugShowGraphicalFramerate)
