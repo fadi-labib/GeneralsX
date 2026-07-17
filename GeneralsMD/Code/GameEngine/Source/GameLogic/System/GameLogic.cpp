@@ -3846,10 +3846,29 @@ void GameLogic::update()
 	// would be getting the CRC anyway, so replays can get the CRCs from the exact instant in time as the original.
 	Bool isMPGameOrReplay = (TheRecorder && TheRecorder->isMultiplayer() && getGameMode() != GAME_SHELL && getGameMode() != GAME_NONE);
 	Bool isSoloGameOrReplay = (TheRecorder && !TheRecorder->isMultiplayer() && getGameMode() != GAME_SHELL && getGameMode() != GAME_NONE);
+#ifdef __EMSCRIPTEN__
+	// Perf (browser port): a skirmish is classified multiplayer for replay recording, so CRC
+	// comes from THIS branch. getCRC(CRC_RECALC) walks all objects (O(objects)) every
+	// getCRCInterval()(=100) frames -> a periodic in-game hitch (~2ms @500 units, rising).
+	// The CRC is a read-only checksum with no gameplay effect, used only for replay-determinism
+	// verification; the browser port has no live network peer to sync with and doesn't play back
+	// replays, so fire it 6x less often to smooth frame time. Set factor 1 to restore stock cadence.
+	Bool generateForMP = (isMPGameOrReplay && (m_frame % (TheGameInfo->getCRCInterval() * 6)) == 0);
+#else
 	Bool generateForMP = (isMPGameOrReplay && (m_frame % TheGameInfo->getCRCInterval()) == 0);
+#endif
 #ifdef DEBUG_CRC
 	Bool generateForSolo = isSoloGameOrReplay && ((m_frame && (m_frame%100 == 0)) ||
 		(getFrame() >= TheCRCFirstFrameToLog && getFrame() < TheCRCLastFrameToLog && ((m_frame % REPLAY_CRC_INTERVAL) == 0)));
+#elif defined(__EMSCRIPTEN__)
+	// Perf: getCRC(CRC_RECALC) walks ALL objects (O(objects)) every REPLAY_CRC_INTERVAL(=100)
+	// frames -> a periodic in-game hitch (~2ms @500 units, rising) felt as stutter during play.
+	// The CRC is a read-only checksum with NO gameplay/determinism effect (see getCRC: XferCRC/
+	// xferSnapshot only hash object state), used solely for replay-determinism verification, which
+	// this browser port does not play back. Fire it 6x less often to smooth frame time. MP is
+	// unaffected (that path uses generateForMP -> getCRCInterval()). Set 1 to restore stock cadence.
+	const Int wasmSoloCrcInterval = REPLAY_CRC_INTERVAL * 6;   // 100 -> 600 frames (~20s @30fps logic)
+	Bool generateForSolo = isSoloGameOrReplay && ((m_frame % wasmSoloCrcInterval) == 0);
 #else
 	Bool generateForSolo = isSoloGameOrReplay && ((m_frame % REPLAY_CRC_INTERVAL) == 0);
 #endif // DEBUG_CRC
