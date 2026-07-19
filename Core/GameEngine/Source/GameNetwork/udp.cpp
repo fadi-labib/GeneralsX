@@ -35,6 +35,10 @@
 //#include "GameNetwork/NetworkInterface.h"
 #include "GameNetwork/udp.h"
 
+// The browser has no UDP sockets — the Emscripten build replaces this whole
+// translation unit with WebUDP.cpp (a JS peer-mesh bridge over WebRTC). Compile
+// it out here so the two do not provide duplicate UDP:: symbols.
+#ifndef __EMSCRIPTEN__
 
 //-------------------------------------------------------------------------
 
@@ -563,3 +567,5 @@ Int UDP::AllowBroadcasts(Bool status)
 	else
 		return FALSE;
 }
+
+#endif // !__EMSCRIPTEN__
