@@ -1357,6 +1357,16 @@ UnsignedInt GlobalData::generateExeCRC()
 	}
 	// GeneralsX @bugfix Copilot 22/03/2026 Load shared script CRC inputs relative to the configured asset root.
 	// Add in MP scripts to the EXE CRC, since the game will go out of sync if they change
+#ifndef __EMSCRIPTEN__
+	// GeneralsX @bugfix: the skirmish-AI startup hang. These two loops fold the loose
+	// (non-archived) Data\Scripts\*.scb files into the exe CRC via a CHUNKED read-to-EOF
+	// loop. On wasm a chunked read of a LOOSE MEMFS file (StdLocalFileSystem path) does
+	// not terminate -- the read blocks/never signals EOF -- so the game HANGS at startup
+	// the instant the skirmish-script bundle is present. Almost all game data is read from
+	// .big archives (single-shot reads) so this only surfaced here. Skip the .scb CRC on
+	// wasm: prepareForMP_or_Skirmish still loads the actual scripts (it uses a single
+	// full-size CachedFileInputStream read, which works), and every wasm client skips these
+	// identically, so the CRC stays deterministic for wasm<->wasm multiplayer.
 	fp = TheFileSystem->openFile("Data\\Scripts\\SkirmishScripts.scb", File::READ | File::BINARY);
 	if (fp != nullptr) {
 		unsigned char crcBlock[blockSize];
@@ -1379,6 +1389,7 @@ UnsignedInt GlobalData::generateExeCRC()
 		fp->close();
 		fp = nullptr;
 	}
+#endif // __EMSCRIPTEN__ : skip .scb chunked CRC reads (loose-file read hangs on wasm)
 
 	DEBUG_LOG(("EXE+Version(%d.%d)+SCB CRC is 0x%8.8X", version >> 16, version & 0xffff, exeCRC.get()));
 	return exeCRC.get();
