@@ -333,10 +333,16 @@ int main(int argc, char* argv[])
 			for (int i = 1; i < __argc; ++i)
 				if (!strcmp(__argv[i], "-xres") || !strcmp(__argv[i], "-yres")) { userSetRes = true; break; }
 
-			// Inject the internal resolution as the CSS viewport size (NOT device pixels from
-			// SDL_GetWindowSizeInPixels). Mouse events arrive in CSS pixels; using device px
-			// here (DPR-scaled) made the vertical axis mismatch and clicks shifted vertically.
+			// Keep the engine's internal resolution 4:3 — the HUD/control bar and tactical view
+			// are authored for 4:3, so a widescreen internal res scales them non-uniformly
+			// (distorted HUD + a black gap beneath it). Derive the largest 4:3 box that fits the
+			// CSS viewport; DX8Wrapper::Pillarbox_Setup then letterboxes that 4:3 frame into the
+			// widescreen canvas (black side/top bars) and SDL3Mouse::scaleMouseCoordinates maps
+			// clicks through the pillarbox rect (TheDisplay->getViewportRect), so clicks stay
+			// accurate. On a 4:3 window this is a no-op (internal == canvas, no pillarbox).
 			int winW = vpW, winH = vpH;
+			if (winW * 3 > winH * 4) winW = (winH * 4) / 3;   // wider than 4:3 -> pillarbox (side bars)
+			else if (winW * 3 < winH * 4) winH = (winW * 3) / 4;   // taller than 4:3 -> letterbox (top/bottom)
 			if (!userSetRes && winW >= 640 && winH >= 480) {
 				static char xv[16], yv[16], xf[] = "-xres", yf[] = "-yres";
 				static char* nargv[64];
