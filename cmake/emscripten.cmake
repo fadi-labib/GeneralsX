@@ -36,7 +36,9 @@ add_compile_options(-pthread)
 # ("must not be resizable") - which breaks glUniformMatrix4fv etc. A large fixed
 # heap keeps the SharedArrayBuffer non-resizable so WebGL accepts the views.
 add_link_options(-pthread -sPROXY_TO_PTHREAD=1
-  -sINITIAL_MEMORY=2147483648 -sALLOW_MEMORY_GROWTH=0)  # 2 GB fixed (holds the in-game asset bundle)
+  -sINITIAL_MEMORY=3758096384 -sALLOW_MEMORY_GROWTH=0)  # 3.5 GB fixed (holds the in-game asset bundle
+  # incl. full audio ~2GB + engine runtime; wasm32 caps at 4GB. Non-growable so WebGL accepts typed-
+  # array views of the SharedArrayBuffer. Raised from 2GB when base-game audio was added (~640MB).
 
 # Exceptions: the engine uses try/catch for control flow (INI loader throws
 # INI_CANT_OPEN_FILE etc., catches, sometimes re-throws). Emscripten disables
@@ -70,12 +72,19 @@ add_link_options("SHELL:--embed-file ${CMAKE_CURRENT_SOURCE_DIR}/Data/Fonts/aria
 # emscripten port at link time; audio deferred; math helpers via GLM/GLI.
 set(SAGE_USE_SDL3 ON  CACHE BOOL "" FORCE)
 set(SAGE_USE_GLM  ON  CACHE BOOL "" FORCE)
-# Audio backend: MiniAudio (single-header) rather than OpenAL. The OpenAL device
-# hard-requires FFmpeg (libavcodec) for decoding, which is heavy to build for wasm;
-# MiniAudio replaces OpenAL+FFmpeg for audio with no extra deps and still supplies
-# the -DSAGE_USE_MINIAUDIO that activates MilesStub. Sound output is a later plan.
-set(SAGE_USE_OPENAL    OFF CACHE BOOL "" FORCE)
-set(SAGE_USE_MINIAUDIO ON  CACHE BOOL "" FORCE)
+# Audio backend: OpenAL via Emscripten's built-in -lopenal (Web Audio backend), which
+# works under PROXY_TO_PTHREAD. MiniAudio's WebAudio backend needs ASYNCIFY/AUDIO_WORKLET
+# (not enabled here) so it inits a context but outputs no sound on wasm. OpenAL decodes
+# through the FFmpeg built below (RTS_BUILD_OPTION_FFMPEG). Same choice as the WASM +
+# Android reference forks. (MiniAudio path kept in-tree but disabled on wasm.)
+set(SAGE_USE_OPENAL    ON  CACHE BOOL "" FORCE)
+set(SAGE_USE_MINIAUDIO OFF CACHE BOOL "" FORCE)
+add_link_options(-lopenal)
+# Audio DECODE + Bink video need libavcodec. There's no vcpkg FFmpeg for wasm32, so
+# GameEngineDevice/CMakeLists builds a minimal one from source (cmake/ffmpeg-emscripten.cmake,
+# WAV/MP3/Bink only). Turning this ON un-stubs MiniAudioManager's decode path (which otherwise
+# leaves PCM empty on wasm = silence) and compiles the existing FFmpegVideoPlayer.
+set(RTS_BUILD_OPTION_FFMPEG ON CACHE BOOL "" FORCE)
 set(SAGE_UPDATE_CHECK OFF CACHE BOOL "" FORCE)  # libcurl update-checker: networking, later plan
 # Deterministic (fdlibm) math is for cross-platform replay/MP bit-exactness - a
 # later plan. Its fetched sources assume x86 fenv (FE_INVALID/FE_INEXACT) that

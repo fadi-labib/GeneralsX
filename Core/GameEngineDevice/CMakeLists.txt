@@ -297,8 +297,16 @@ if(SAGE_USE_MINIAUDIO)
 endif()
 
 if(RTS_BUILD_OPTION_FFMPEG)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
+    # GeneralsX @build dx8wasm - no pkg-config/vcpkg FFmpeg for wasm32; build a
+    # minimal FFmpeg from source and expose it as PkgConfig::FFMPEG (same target
+    # name), so the link + source wiring below is identical to the native path.
+    if(EMSCRIPTEN)
+        include(${CMAKE_SOURCE_DIR}/cmake/ffmpeg-emscripten.cmake)
+        set(FFMPEG_FOUND TRUE)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
+    endif()
 
     if(FFMPEG_FOUND)
         target_sources(corei_gameenginedevice_private INTERFACE
