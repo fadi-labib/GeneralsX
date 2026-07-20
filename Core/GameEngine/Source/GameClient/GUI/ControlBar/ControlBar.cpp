@@ -3829,7 +3829,15 @@ void ControlBar::setFullViewportHeight()
 
 void ControlBar::setScaledViewportHeight()
 {
+#ifdef __EMSCRIPTEN__
+	// At the web build's non-standard 4:3 internal resolution (e.g. 1440x1080 from the
+	// widescreen 4:3 injection), the scaled tactical viewport (0.80*H) clips above where
+	// the control-bar frame begins, leaving a black band. Render the tactical view
+	// full-height; the SEE_THRU control-bar window overlays the bottom, so no gap appears.
+	TheTacticalView->setHeight(TheDisplay->getHeight());
+#else
 	TheTacticalView->setHeight(TheDisplay->getHeight() * TheGlobalData->m_viewportHeightScale);
+#endif
 }
 
 // GeneralsX @bugfix w1semannn 07/06/2026 Fix tooltip height clipping with Unicode fonts (Issue #153)
