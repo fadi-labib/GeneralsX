@@ -49,7 +49,18 @@ Real FrameRateLimit::wait(UnsignedInt maxFps)
 
 	// GeneralsX @bugfix BenderAI 11/05/2026 Validate FPS limit to prevent division by zero and underflow
 	// Skip limiting if maxFps is 0 or extremely high (uncapped mode)
-	if (maxFps == 0 || maxFps >= 1000000)
+	//
+	// GeneralsX @wasm: never limit on the browser. requestAnimationFrame already paces
+	// the engine loop to the display refresh; an extra sleep + busy-wait here spins each
+	// frame out to the full frame budget, which pushes it past the vsync window so the
+	// compositor locks to half-rate (60 -> 30 fps), AND it burns the engine thread. Just
+	// measure elapsed like the uncapped path and let rAF do the pacing.
+#ifdef __EMSCRIPTEN__
+	const bool wasmNoLimit = true;
+#else
+	const bool wasmNoLimit = false;
+#endif
+	if (maxFps == 0 || maxFps >= 1000000 || wasmNoLimit)
 	{
 		// Uncapped or invalid: just return elapsed time without limiting
 #ifdef _WIN32
