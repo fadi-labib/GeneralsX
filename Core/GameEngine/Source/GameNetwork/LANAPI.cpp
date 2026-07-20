@@ -43,6 +43,22 @@
 #include <net/if.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+// The browser has no network interfaces, so IPEnumeration (getifaddrs/gethostbyname)
+// yields a bogus LAN address. The authoritative local address is the virtual IP the
+// JS peer mesh (gxNet) assigned when this tab hosted or joined a room. Peers route a
+// join back to whatever address the LAN announce advertises, so the LAN layer MUST
+// advertise this vip — otherwise discovery works (broadcast) but the join unicast is
+// aimed at an unroutable address and times out. Returns 0 before a room is joined.
+static UnsignedInt gxGetMeshVip()
+{
+	return (UnsignedInt)MAIN_THREAD_EM_ASM_INT({
+		return (typeof gxNet !== 'undefined') ? (gxNet.myVip >>> 0) : 0;
+	});
+}
+#endif
+
 static const UnsignedShort lobbyPort = 8086; ///< This is the UDP port used by all LANAPI communication
 
 AsciiString GetMessageTypeString(UnsignedInt type);
@@ -468,6 +484,19 @@ void LANAPI::update()
 	{
 		return;
 	}
+
+#ifdef __EMSCRIPTEN__
+	// The mesh vip can arrive/settle after the LAN lobby is already open (a joiner
+	// gets its vip only once the host answers, and a user may host/join the room
+	// after entering this screen). Keep the LAN transport bound to the current vip;
+	// SetLocalIP rebinds only when it actually differs, so this is a cheap no-op
+	// once synced. Without this, discovery works but the join unicast is unroutable.
+	{
+		const UnsignedInt vip = gxGetMeshVip();
+		if (vip && vip != m_localIP)
+			SetLocalIP(vip);
+	}
+#endif
 
 	// Let the UDP socket breathe
 	if ((m_transport->update() == FALSE) && (LANSocketErrorDetected == FALSE)) {
@@ -1443,6 +1472,15 @@ void LANAPI::addPlayer( LANPlayer *player )
 Bool LANAPI::SetLocalIP( UnsignedInt localIP )
 {
 	Bool retval = TRUE;
+#ifdef __EMSCRIPTEN__
+	// Ignore the enumerated (bogus) IP: bind and advertise the gxNet-assigned vip so
+	// peers can route a join back to us. Falls through to the passed IP only if no
+	// room has been joined yet (vip == 0), which cannot produce a working LAN anyway.
+	{
+		const UnsignedInt vip = gxGetMeshVip();
+		if (vip) localIP = vip;
+	}
+#endif
 	UnsignedInt oldIP = m_localIP;
 	m_localIP = localIP;
 	// GeneralsX @build GitHubCopilot 11/04/2026 Trace LAN socket rebind lifecycle for issue #86 diagnostics.
