@@ -815,6 +815,21 @@ void GameEngine::init()
 		// load the initial shell screen
 		TheShell->push( "Menus/MainMenu.wnd" );
 
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - skip the EA logo + sizzle intro on the normal (menu)
+		// boot. The Bink intro movies aren't packaged on web (MOVIES=0), and the intro
+		// state machine (GameClient::update) otherwise parks in the movie branch for a long
+		// time before showShellMap()/showShell() run. Clearing PlayIntro/PlaySizzle makes
+		// the "after intro" path run on the first frame (see the !m_playIntro -> m_afterIntro
+		// assignment below), so the main menu + shell-map backdrop appear immediately. The
+		// -file skirmish path below disables these separately for its own reasons.
+		if (TheGlobalData->m_initialFile.isEmpty())
+		{
+			TheWritableGlobalData->m_playIntro = FALSE;
+			TheWritableGlobalData->m_playSizzle = FALSE;
+		}
+#endif
+
 		// This allows us to run a map from the command line
 		if (TheGlobalData->m_initialFile.isEmpty() == FALSE)
 		{
