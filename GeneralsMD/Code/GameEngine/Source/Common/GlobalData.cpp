@@ -1012,6 +1012,7 @@ GlobalData::GlobalData()
 	m_initialFile.clear();
 	m_pendingFile.clear();
 	m_wasmStressSkirmish = FALSE;
+	m_wasmAIDifficulty = -1;   // -aidifficulty override; -1 => default (Easy)
 
 	m_simulateReplays.clear();
 	m_simulateReplayJobs = SIMULATE_REPLAYS_SEQUENTIAL;

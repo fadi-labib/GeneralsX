@@ -710,6 +710,24 @@ Int parseStress(char *args[], int)
 	TheWritableGlobalData->m_wasmStressSkirmish = TRUE;
 	return 1;
 }
+
+// GeneralsX @build dx8wasm - pick the -file skirmish AI level from the launcher
+// (easy|medium|hard). The skirmish setup UI isn't wired on web yet, so this is how a
+// difficulty is chosen; the -file path (GameEngine.cpp) maps it to the AI slot state
+// and the game difficulty. No-op without -file.
+Int parseAIDifficulty(char *args[], int num)
+{
+	if (num > 1)
+	{
+		AsciiString d = args[1];
+		d.toLower();
+		if (d == "hard" || d == "brutal") TheWritableGlobalData->m_wasmAIDifficulty = 2;
+		else if (d == "medium" || d == "normal" || d == "med") TheWritableGlobalData->m_wasmAIDifficulty = 1;
+		else TheWritableGlobalData->m_wasmAIDifficulty = 0;   // easy / anything else
+		return 2;
+	}
+	return 1;
+}
 #endif
 
 #if defined(RTS_DEBUG)
@@ -1329,6 +1347,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-file", parseFile },
 	{ "-map", parseMapName },
 	{ "-stress", parseStress },
+	{ "-aidifficulty", parseAIDifficulty },
 #endif
 
 #ifdef DEBUG_LOGGING

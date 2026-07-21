@@ -887,11 +887,21 @@ void GameEngine::init()
 				humanSlot.setTeamNumber(-1);    // -1 => no team (free-for-all: they fight)
 				TheSkirmishGameInfo->setSlot(0, humanSlot);
 
-				// -stress: Brutal AI so it builds and attacks fast, making the
-				// state-dependent in-game slowdown reproduce in a headless capture.
+				// -stress forces Brutal AI + huge cash for the headless perf repro. Otherwise
+				// the AI level comes from -aidifficulty (easy|medium|hard), default Easy. The
+				// skirmish setup UI isn't wired on web yet, so this launcher flag is how the
+				// player picks difficulty; it drives both the AI slot skill and the game
+				// difficulty (which scales AI resource/handicap bonuses).
 				const Bool stress = TheGlobalData->m_wasmStressSkirmish;
+				const Int aiDiff = stress ? 2
+					: (TheGlobalData->m_wasmAIDifficulty < 0 ? 0 : TheGlobalData->m_wasmAIDifficulty);
+				const SlotState aiState =
+					(aiDiff >= 2) ? SLOT_BRUTAL_AI : (aiDiff == 1) ? SLOT_MED_AI : SLOT_EASY_AI;
+				const GameDifficulty gameDiff =
+					(aiDiff >= 2) ? DIFFICULTY_HARD : (aiDiff == 1) ? DIFFICULTY_NORMAL : DIFFICULTY_EASY;
+				MAIN_THREAD_EM_ASM({ console.log('[SKIRMISH] AI difficulty=' + $0 + ' (0=easy,1=med,2=hard)'); }, aiDiff);
 				GameSlot aiSlot;
-				aiSlot.setState(stress ? SLOT_BRUTAL_AI : SLOT_EASY_AI);
+				aiSlot.setState(aiState);
 				aiSlot.setColor(1);
 				aiSlot.setPlayerTemplate(chinaTmpl);
 				aiSlot.setStartPos(1);
@@ -911,7 +921,7 @@ void GameEngine::init()
 				TheWritableGlobalData->m_mapName = TheGlobalData->m_initialFile;
 				GameMessage *msg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
 				msg->appendIntegerArgument(GAME_SKIRMISH);
-				msg->appendIntegerArgument(DIFFICULTY_NORMAL);
+				msg->appendIntegerArgument(gameDiff);
 				msg->appendIntegerArgument(0);
 				msg->appendIntegerArgument(60);   // FPS limit
 #else
