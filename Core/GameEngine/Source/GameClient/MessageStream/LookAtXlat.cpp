@@ -355,7 +355,13 @@ GameMessageDisposition LookAtTranslator::translateGameMessage(const GameMessage 
 						stopScrolling();
 					}
 				}
-				else
+				// Don't edge-scroll from the (0,0) default before the pointer has actually
+				// entered/moved in the window. On the web the mouse reads (0,0) until the
+				// first real move; (0,0) sits in BOTH the left and top edge zones, so the
+				// camera yanked to the top-left corner on game start. m_lastMouseMoveTimeMsec
+				// stays 0 until a genuine move (set above), and desktop gets a real cursor
+				// position on the first message, so this is a no-op there.
+				else if (m_lastMouseMoveTimeMsec != 0)
 				{
 					if ( m_currentPos.x < edgeScrollSize || m_currentPos.y < edgeScrollSize || m_currentPos.y >= height-edgeScrollSize || m_currentPos.x >= width-edgeScrollSize )
 					{
