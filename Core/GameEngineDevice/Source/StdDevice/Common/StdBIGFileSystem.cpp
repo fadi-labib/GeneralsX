@@ -650,6 +650,19 @@ void StdBIGFileSystem::closeAllFiles() {
 
 Bool StdBIGFileSystem::loadBigFilesFromDirectory(AsciiString dir, AsciiString fileMask, Bool overwrite) {
 
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - restore Zero-Hour-over-base-Generals archive precedence.
+	// On desktop, ZH and base Generals .big archives live in SEPARATE directories loaded
+	// in two passes (ZH first, first-match-wins), so ZH overrides base. The emscripten
+	// file_packager flattens every archive into "/", so they load in a SINGLE alphabetical
+	// pass. With the default first-match-wins, base "maps.big" (sorts before "MapsZH.big")
+	// shadowed the ZH MapCache.ini: the engine saw only 55 base-Generals maps, ShellMapMD
+	// was absent (-> black menu backdrop), and the map picker/lobby lost ~95 ZH maps.
+	// Because each "<name>ZH.big" always sorts AFTER its base "<name>.big", switching to
+	// last-match-wins makes the ZH archive win for every shared file, matching retail.
+	overwrite = TRUE;
+#endif
+
 	FilenameList filenameList;
 	TheLocalFileSystem->getFileListInDirectory(dir, "", fileMask, filenameList, TRUE);
 
