@@ -98,6 +98,7 @@
 #include "GameLogic/Module/CreateModule.h"
 #include "GameLogic/Module/DestroyModule.h"
 #include "GameLogic/Module/OpenContain.h"
+#include "GameLogic/ControlBridge.h"
 #include "GameLogic/PartitionManager.h"
 #include "GameLogic/PolygonTrigger.h"
 #include "GameLogic/ScriptActions.h"
@@ -1389,6 +1390,12 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	TheTerrainLogic->loadMap( TheGlobalData->m_mapName, false );
 	// anytime the world's size changes, must reset the partition mgr
 	//ThePartitionManager->init();
+
+	// LLM-general control bridge (Task 1.1): waypoints + polygon triggers are
+	// loaded as part of the map data above, so this is the earliest point at
+	// which region derivation can see real map content.
+	if (!TheControlBridge) TheControlBridge = new ControlBridge();
+	TheControlBridge->init();
 
 	// update the loadscreen
 	updateLoadProgress(LOAD_PROGRESS_POST_LOAD_MAP);

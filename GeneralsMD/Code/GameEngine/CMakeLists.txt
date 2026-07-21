@@ -235,6 +235,7 @@ set(GAMEENGINE_SRC
     Include/GameLogic/AIPlayer.h
     Include/GameLogic/AISkirmishPlayer.h
     Include/GameLogic/AIStateMachine.h
+    Include/GameLogic/ControlBridge.h
     Include/GameLogic/AITNGuard.h
     Include/GameLogic/Armor.h
     Include/GameLogic/ArmorSet.h
@@ -831,6 +832,7 @@ set(GAMEENGINE_SRC
 #    Source/GameLogic/AI/AIPathfind.cpp
     Source/GameLogic/AI/AIPlayer.cpp
     Source/GameLogic/AI/AISkirmishPlayer.cpp
+    Source/GameLogic/ControlBridge.cpp
     Source/GameLogic/ControlSpike.cpp
     Source/GameLogic/AI/AIStates.cpp
     Source/GameLogic/AI/AITNGuard.cpp
