@@ -4101,6 +4101,11 @@ void GameLogic::update()
 	#undef STRESS_LAP
 #endif
 
+	// LLM-general control bridge: per-frame tick (drains WS ops in Phase 2; for
+	// Task 1.2 it also fires the temporary observe() debug emitter at an early frame).
+	if (TheControlBridge)
+		TheControlBridge->tick();
+
 	// increment world time
 	if (!m_startNewGame)
 	{
