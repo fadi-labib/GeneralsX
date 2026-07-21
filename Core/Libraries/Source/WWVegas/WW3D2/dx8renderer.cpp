@@ -1414,13 +1414,22 @@ void DX8SkinFVFCategoryContainer::Render()
 					verts[v].nx=(*norm)[0];
 					verts[v].ny=(*norm)[1];
 					verts[v].nz=(*norm)[2];
-					// Force diffuse to white (0xFFFFFFFF) because Base Game infantry 
+#ifdef __EMSCRIPTEN__
+					// WebGL backend: keep the real baked vertex colors and let fixed-function
+					// lighting run (matches the reference d3d8webgl port). The white-force below
+					// is a DXVK-desktop-only workaround — on WebGL it flattens infantry to an
+					// unlit MODULATE(texture, white), which is what made soldiers look identical,
+					// detail-less ("no clothes") and unnaturally lit.
+					verts[v].diffuse = diffuse ? *diffuse++ : 0;
+#else
+					// Force diffuse to white (0xFFFFFFFF) because Base Game infantry
 					// often have black vertex colors baked into their W3D files
 					// which causes them to render completely black in DXVK when D3DTA_DIFFUSE is used.
 					verts[v].diffuse=0xFFFFFFFF;
 					if (diffuse) {
 						diffuse++; // Advance the pointer if it exists, to keep it in sync if needed (though we only use it here)
 					}
+#endif
 
 					if (uv0) {
 						verts[v].u1=(*uv0)[0];
@@ -1465,24 +1474,33 @@ void DX8SkinFVFCategoryContainer::Render()
 		// when no LightEnvironment is set. Forcing COLOR1 makes D3DTA_DIFFUSE=vertex.diffuse=white,
 		// so MODULATE(texture, white)=texture - matching original VC6/D3D8 behavior.
 		DX8Wrapper::Apply_Render_State_Changes();
+#ifndef __EMSCRIPTEN__
+		// DXVK-desktop-only (see vertex-fill note): with white-forced diffuse, force COLOR1
+		// sources and disable lighting so skins draw as MODULATE(texture, white). On WebGL we
+		// keep real vertex colors + lighting, so skipping this restores infantry shading/detail.
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_DIFFUSEMATERIALSOURCE, D3DMCS_COLOR1);
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_AMBIENTMATERIALSOURCE, D3DMCS_COLOR1);
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_LIGHTING, FALSE);
+#endif
 
 		for (unsigned pass=0;pass<passes;++pass) {
 			SNAPSHOT_SAY(("Pass: %d",pass));
 
 			TextureCategoryListIterator it(&visible_texture_category_list[pass]);
 			while (!it.Is_Done()) {
-				LogSkinRender(it.Peek_Obj(), pass);
+#ifndef __EMSCRIPTEN__
+				LogSkinRender(it.Peek_Obj(), pass);   // dead debug log (hardcoded desktop path)
+#endif
 				it.Peek_Obj()->Render();
 				it.Next();
 			}
 		}
 
-		// Restore render states to defaults after skin render
+#ifndef __EMSCRIPTEN__
+		// Restore render states to defaults after skin render (only desktop changed them above)
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_DIFFUSEMATERIALSOURCE, D3DMCS_MATERIAL);
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_AMBIENTMATERIALSOURCE, D3DMCS_MATERIAL);
+#endif
 
 		Render_Procedural_Material_Passes();
 	}
