@@ -29,6 +29,7 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>  // emscripten_set_main_loop for the browser render loop
+#include <exception>     // std::exception in the wasm frame's resilient catch
 #endif
 
 #include "Common/ActionManager.h"
@@ -1214,8 +1215,20 @@ static void wasm_engine_frame()
 	if (!TheGameEngine || TheGameEngine->getQuitting()) { emscripten_cancel_main_loop(); return; }
 	wasm_stress_spawn();
 	double pf_t0 = emscripten_get_now();
+	// A single frame's exception must NOT kill the whole game. The old code called
+	// emscripten_cancel_main_loop() here, which permanently tears down the rAF loop
+	// (nulls MainLoop.scheduler) — the game goes black forever with no recovery, e.g.
+	// after a transient hiccup on the first frame back from a backgrounded tab. Log and
+	// skip this frame instead; a transient throw self-recovers next frame.
 	try { TheGameEngine->update(); }
-	catch (...) { emscripten_cancel_main_loop(); return; }
+	catch (const std::exception& e) {
+		fprintf(stderr, "[wasm] std::exception in engine update(): %s — skipping frame\n", e.what());
+		return;
+	}
+	catch (...) {
+		fprintf(stderr, "[wasm] unknown exception in engine update() — skipping frame\n");
+		return;
+	}
 	TheFramePacer->update();
 	// Under -stress (headless perf repro) report per-frame update() cost vs game frame,
 	// so a rising trend during the AI battle is visible. Silent in normal runs.
