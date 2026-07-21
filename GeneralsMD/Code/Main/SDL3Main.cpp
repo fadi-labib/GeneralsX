@@ -333,16 +333,14 @@ int main(int argc, char* argv[])
 			for (int i = 1; i < __argc; ++i)
 				if (!strcmp(__argv[i], "-xres") || !strcmp(__argv[i], "-yres")) { userSetRes = true; break; }
 
-			// Keep the engine's internal resolution 4:3 — the HUD/control bar and tactical view
-			// are authored for 4:3, so a widescreen internal res scales them non-uniformly
-			// (distorted HUD + a black gap beneath it). Derive the largest 4:3 box that fits the
-			// CSS viewport; DX8Wrapper::Pillarbox_Setup then letterboxes that 4:3 frame into the
-			// widescreen canvas (black side/top bars) and SDL3Mouse::scaleMouseCoordinates maps
-			// clicks through the pillarbox rect (TheDisplay->getViewportRect), so clicks stay
-			// accurate. On a 4:3 window this is a no-op (internal == canvas, no pillarbox).
+			// Render at the NATIVE canvas resolution (widescreen), matching the reference web
+			// port (WebMain.cpp). The engine supports non-4:3 (W3DDisplay filters/clamps widths
+			// to 4:3..16:9 and rescales the HUD/fonts to the resolution), so no 4:3 pillarbox is
+			// needed. The old 4:3 box left black side-bars + a gap under the HUD, and forced a
+			// non-1024x768 backbuffer that (before the d3d8.cpp adapter-mode fix) degraded to
+			// 16-bit and stripped texture alpha. -xres/-yres = the full canvas; d3d8.cpp
+			// enumerates this exact size as a 32-bit mode, so the backbuffer stays 32-bit.
 			int winW = vpW, winH = vpH;
-			if (winW * 3 > winH * 4) winW = (winH * 4) / 3;   // wider than 4:3 -> pillarbox (side bars)
-			else if (winW * 3 < winH * 4) winH = (winW * 3) / 4;   // taller than 4:3 -> letterbox (top/bottom)
 			if (!userSetRes && winW >= 640 && winH >= 480) {
 				static char xv[16], yv[16], xf[] = "-xres", yf[] = "-yres";
 				static char* nargv[64];
