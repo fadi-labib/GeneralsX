@@ -29,6 +29,9 @@
 
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>  // dx8wasm: "Exit Game" reloads the tab (no OS process to quit to)
+#endif
 
 #include "gamespy/ghttp/ghttp.h"
 
@@ -253,6 +256,15 @@ static void showSelectiveButtons( Int show )
 static void quitCallback()
 {
 	buttonPushed = TRUE;
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - there is no OS process to quit to in a browser tab. The
+	// desktop path (TheShell->pop() + setQuitting()) tears down the shell and stops the main
+	// loop, leaving a dead blank screen ("Exit Game hangs"). Reload the page for a clean
+	// restart back to the menu instead.
+	TheScriptEngine->signalUIInteract(TheShellHookNames[SHELL_SCRIPT_HOOK_MAIN_MENU_EXIT_SELECTED]);
+	MAIN_THREAD_EM_ASM({ location.reload(); });
+	return;
+#endif
 	TheScriptEngine->signalUIInteract(TheShellHookNames[SHELL_SCRIPT_HOOK_MAIN_MENU_EXIT_SELECTED]);
 	TheShell->pop();
 	TheGameEngine->setQuitting( TRUE );
