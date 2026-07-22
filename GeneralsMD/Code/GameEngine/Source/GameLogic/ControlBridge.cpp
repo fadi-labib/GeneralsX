@@ -6,6 +6,10 @@
 #include "GameLogic/SidesList.h"        // BuildListInfo (build-list nodes)
 #include "GameLogic/GameLogic.h"        // TheGameLogic
 #include "GameLogic/Object.h"           // Object, getShroudedStatus/getTemplate/isKindOf
+#include "GameLogic/Module/AIUpdate.h"  // AIUpdateInterface::aiAttackMoveToPosition (attack order)
+#include "GameLogic/Weapon.h"           // NO_MAX_SHOTS_LIMIT
+#include "GameLogic/PartitionManager.h" // ThePartitionManager, getShroudStatusForPlayer, CellShroudStatus
+#include "Common/GameCommon.h"          // CMD_FROM_AI, CELLSHROUD_CLEAR
 #include "Common/Player.h"              // Player, Money, Energy
 #include "Common/PlayerList.h"          // ThePlayerList
 #include "Common/Team.h"                // ObjectIterateFunc, Team
@@ -121,6 +125,31 @@ void enemyObjectCb(Object* obj, void* ud)
   if (obj->isKindOf(KINDOF_STRUCTURE)) bumpCount(a->structures, nm);
   else                                 bumpCount(a->army, nm);
   ++a->visibleObjects;
+}
+
+// Gather a player's weapon-bearing combat units for `attack` (spec A.4). The
+// attack-role filter mirrors observe()'s unit tally but is stricter: a unit
+// counts only if it is INFANTRY/VEHICLE/AIRCRAFT, is NOT a dozer/harvester/
+// structure, actually bears a weapon (hasAnyWeapon), and has an AI interface we
+// can issue the order through. Everything else (builders, resource collectors,
+// bases) is excluded so "no attack-role teams available" is a true resource-only
+// signal.
+struct CombatAccum {
+  std::vector<Object*> units;
+};
+
+void combatUnitCb(Object* obj, void* ud)
+{
+  CombatAccum* a = (CombatAccum*)ud;
+  if (!obj) return;
+  if (obj->isKindOf(KINDOF_STRUCTURE)) return;
+  if (obj->isKindOf(KINDOF_DOZER))     return;
+  if (obj->isKindOf(KINDOF_HARVESTER)) return;
+  if (!(obj->isKindOf(KINDOF_INFANTRY) || obj->isKindOf(KINDOF_VEHICLE)
+     || obj->isKindOf(KINDOF_AIRCRAFT))) return;
+  if (!obj->hasAnyWeapon())            return;   // weapon-bearing only
+  if (!obj->getAIUpdateInterface())    return;   // must be commandable
+  a->units.push_back(obj);
 }
 
 } // anonymous namespace
@@ -514,16 +543,16 @@ void ControlBridge::tick()
   jsonReadInt(buf, "id", id);
   jsonReadStr(buf, "op", op);
 
-  // Dispatch. `observe` is the read-op; `set_build_list` and
-  // `set_team_priorities` are Phase 3 write-ops routed through apply(); every
-  // other op still gets an explicit "not implemented" reply (coverage, never a
-  // silent drop).
+  // Dispatch. `observe` is the read-op; `set_build_list`, `set_team_priorities`
+  // and `attack` are Phase 3 write-ops routed through apply(); every other op
+  // still gets an explicit "not implemented" reply (coverage, never a silent
+  // drop).
   AsciiString result;
   if (op == "observe") {
     Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
     result = observe(who);
     if (result.isEmpty()) result = "{}";
-  } else if (op == "set_build_list" || op == "set_team_priorities") {
+  } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack") {
     result = apply(op, buf);
   } else {
     result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
@@ -827,6 +856,113 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
       result.concat(tmp);
     }
     result.concat("]}");
+    return result;
+  }
+
+  if (op == "attack") {
+    // spec A.4: order the bridge player's combat teams to attack-move to a named
+    // region's center. Fog only ANNOTATES the reply (a warning) — it NEVER gates
+    // the order. Rejection is resource-only (no combat units) or unknown-region.
+
+    // 1) Parse args.target_region (+ optional commit) depth/scope-aware.
+    AsciiString targetRegion, commit;
+    const char* argsVal = jsonFindValue(req, "args");
+    if (argsVal && *argsVal == '{') {
+      const char* argsEnd = jsonMatchBracket(argsVal);
+      if (argsEnd) {
+        jsonReadStrIn(argsVal, argsEnd, "target_region", targetRegion);
+        jsonReadStrIn(argsVal, argsEnd, "commit", commit);   // "all"|"ready_only"; see note below
+      }
+    }
+    if (targetRegion.isEmpty())
+      return "{\"accepted\":false,\"reason\":\"missing args.target_region\"}";
+
+    // 2) Resolve the region -> its center Coord3D (regions come from Task 1.1's
+    //    waypoint/polygon derivation). Unknown name is a hard reject.
+    const BridgeRegion* region = regionByName(targetRegion);
+    if (!region)
+      return "{\"accepted\":false,\"reason\":\"unknown region\"}";
+    const Coord3D center = region->center;
+
+    if (!ThePlayerList)
+      return "{\"accepted\":false,\"reason\":\"no player list\"}";
+
+    // 3) Pick a player that owns attack-role units: bridge player first, else the
+    //    first player that owns any (same selection policy as set_build_list /
+    //    set_team_priorities — the human bridge player owns no combat units in the
+    //    current headless boot, so this falls through to the skirmish AI that does).
+    Player* p = NULL;
+    CombatAccum acc;
+    if (m_bridgePlayerIndex >= 0) {
+      Player* bp = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
+      if (bp) { bp->iterateObjects(combatUnitCb, &acc); if (!acc.units.empty()) p = bp; }
+    }
+    if (!p) {
+      for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+        Player* q = ThePlayerList->getNthPlayer(pi);
+        if (!q) continue;
+        acc.units.clear();
+        q->iterateObjects(combatUnitCb, &acc);
+        if (!acc.units.empty()) { p = q; break; }
+      }
+    }
+    // Resource-only rejection: nothing to send.
+    if (!p || acc.units.empty())
+      return "{\"accepted\":false,\"reason\":\"no attack-role teams available\"}";
+
+    const Int idx = p->getPlayerIndex();
+
+    // 4) Issue the order. Mechanism = Option B (direct per-unit AI command). The
+    //    spec's Option A (build a MSG_CREATE_SELECTED_GROUP + MSG_DO_ATTACKMOVETO
+    //    human-input mirror) routes through client-side selection state that does
+    //    not exist headless (no InGameUI selection); commanding each unit's
+    //    AICommandInterface directly is the mechanism that actually issues a
+    //    verifiable order with no UI. aiAttackMoveToPosition mirrors the human
+    //    attack-move (move toward the point, engage what it meets), and we pass
+    //    CMD_FROM_PLAYER (not CMD_FROM_AI) precisely to preserve that human-mirror
+    //    semantics at the AIUpdate layer: CMD_FROM_PLAYER is what gates the
+    //    forbidPlayerCommands check (AIUpdate.cpp:2610, so units locked out of
+    //    player control correctly reject this order the same as they would a real
+    //    player order) and what triggers setGoalPositionClipped (AIUpdate.cpp:355-
+    //    360, so the goal position gets clamped to the map instead of an AI-only
+    //    order being allowed to target off-map points). This is a command-source
+    //    tag only; it does not require any UI/MessageStream plumbing. `commit`
+    //    (all vs ready_only) is parsed but not yet differentiated in v1: with no
+    //    per-team readiness model headless we commit every attack-role unit we
+    //    found; refining ready_only to skip in-production/garrisoned teams is
+    //    deferred like the other v1 heuristics.
+    Int committed = 0;
+    for (Object* u : acc.units) {
+      AIUpdateInterface* ai = u->getAIUpdateInterface();
+      if (!ai) continue;
+      ai->aiAttackMoveToPosition(&center, NO_MAX_SHOTS_LIMIT, CMD_FROM_PLAYER);
+      ++committed;
+    }
+
+    // 5) FOG = WARN, NEVER BLOCK. Read the SAME shroud query that fogs observe(),
+    //    now used only to annotate: if the target cell is not clear for the
+    //    commanding player, the order STILL went through — we just flag it.
+    Bool fogged = FALSE;
+    if (ThePartitionManager) {
+      CellShroudStatus s = ThePartitionManager->getShroudStatusForPlayer(idx, &center);
+      if (s != CELLSHROUD_CLEAR) fogged = TRUE;
+    }
+
+    fprintf(stderr, "[BRIDGE] attack: committed %d unit(s) of player %d to region '%s'%s\n",
+            committed, idx, region->name.str(), fogged ? " (into fog)" : "");
+    fflush(stderr);
+
+    // 6) Result. teams_committed = the number of units we actually ordered.
+    AsciiString result = "{\"accepted\":true,\"teams_committed\":";
+    AsciiString num; num.format("%d", committed);
+    result.concat(num);
+    result.concat(",\"target\":\"");
+    jsonEscape(result, region->name.str());
+    result.concat("\"");
+    if (fogged)
+      result.concat(",\"warning\":\"target_region not currently visible \\u2014 "
+                    "committing into fog; enemy strength there is unknown\"");
+    result.concat("}");
     return result;
   }
 
