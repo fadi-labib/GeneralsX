@@ -13,6 +13,7 @@
 #include "Common/KindOf.h"              // KINDOF_*
 #include <utility>
 #include <vector>
+#include <list>                         // Player::getPlayerTeams() -> std::list<TeamPrototype*>
 #include <cstdlib>                      // atoi
 #include <cstring>                      // strstr
 #ifdef __EMSCRIPTEN__
@@ -276,6 +277,93 @@ static Bool jsonReadStringArrayIn(const char* begin, const char* end,
 }
 
 // ---------------------------------------------------------------------------
+// Bounded scalar readers, mirroring jsonFindValue/jsonReadInt/jsonReadStr but
+// confined to [begin,end) instead of scanning a NUL-terminated string. Needed
+// to read "unit"/"priority"/"count" out of ONE array-element object without
+// spilling into a sibling object that happens to share a key name (set_build_list
+// only ever needed one flat array; set_team_priorities needs an array of
+// objects, so each object is its own bounded scope).
+// ---------------------------------------------------------------------------
+static const char* jsonFindValueIn(const char* begin, const char* end, const char* key)
+{
+  AsciiString pat; pat.format("\"%s\"", key);
+  const Int patLen = pat.getLength();
+  for (const char* q = begin; q + patLen <= end; ++q) {
+    if (strncmp(q, pat.str(), patLen) == 0) {
+      const char* p = q + patLen;
+      while (p < end && *p != ':') ++p;
+      if (p >= end || *p != ':') return NULL;
+      ++p;
+      while (p < end && (*p==' '||*p=='\t'||*p=='\n'||*p=='\r')) ++p;
+      return p;
+    }
+  }
+  return NULL;
+}
+
+static Bool jsonReadIntIn(const char* begin, const char* end, const char* key, Int& out)
+{
+  const char* p = jsonFindValueIn(begin, end, key);
+  if (!p || p >= end) return FALSE;
+  out = atoi(p);
+  return TRUE;
+}
+
+static Bool jsonReadStrIn(const char* begin, const char* end, const char* key, AsciiString& out)
+{
+  const char* p = jsonFindValueIn(begin, end, key);
+  if (!p || p >= end || *p != '"') return FALSE;
+  ++p;
+  out.clear();
+  for (; p < end && *p != '"'; ++p) {
+    if (*p == '\\' && p + 1 < end) {
+      ++p;
+      switch (*p) {
+        case 'n': out.concat('\n'); break;
+        case 't': out.concat('\t'); break;
+        case 'r': out.concat('\r'); break;
+        default:  out.concat(*p);   break;
+      }
+    } else {
+      out.concat(*p);
+    }
+  }
+  return TRUE;
+}
+
+// One requested team-priority entry: {"unit":"<name>","priority":<int>,"count":<int?>}.
+struct TeamPriorityReq { AsciiString unit; Int priority; Int count; };
+
+// Read `"teams":[ {...}, {...} ]` located strictly WITHIN [begin,end). Walks the
+// array brace-matching each element object (jsonMatchBracket, same helper the
+// array-of-strings reader uses for the array itself) and reads unit/priority/
+// count from within THAT object's bounds only. Entries missing unit or
+// priority are skipped (not pushed) rather than pushed with garbage defaults.
+static Bool jsonReadTeamsArrayIn(const char* begin, const char* end,
+                                 std::vector<TeamPriorityReq>& out)
+{
+  const char* p = jsonFindValueIn(begin, end, "teams");
+  if (!p || p >= end || *p != '[') return FALSE;
+  const char* arrEnd = jsonMatchBracket(p);
+  if (!arrEnd || arrEnd > end) return FALSE;
+  ++p;                                             // step past '['
+  while (p < arrEnd) {
+    while (p < arrEnd && *p != '{') ++p;
+    if (p >= arrEnd) break;
+    const char* objEnd = jsonMatchBracket(p);
+    if (!objEnd || objEnd > arrEnd) break;
+    TeamPriorityReq req; req.priority = 0; req.count = 0;
+    if (jsonReadStrIn(p, objEnd, "unit", req.unit) &&
+        jsonReadIntIn(p, objEnd, "priority", req.priority)) {
+      jsonReadIntIn(p, objEnd, "count", req.count);  // optional, unused in v1 (see apply())
+      out.push_back(req);
+    }
+    p = objEnd + 1;
+  }
+  return TRUE;
+}
+
+// ---------------------------------------------------------------------------
 // Logical structure name <-> ThingTemplate keyword table.
 //
 // The MCP tool speaks faction-agnostic logical names (spec A.2 enum). Build-list
@@ -344,6 +432,51 @@ static const char* logicalForTemplate(const char* tmpl)
   return NULL;
 }
 
+// ---------------------------------------------------------------------------
+// Logical unit name <-> team-member ThingTemplate keyword table (spec A.3's
+// faction-agnostic `unit` enum: ranger/missile_defender/crusader_tank/humvee/
+// tomahawk/raptor_jet). set_team_priorities matches these against each
+// TeamTemplateInfo::m_unitsInfo[].unitThingName (the unit types a team is
+// composed of), NOT against build-list structures. Keywords verified against
+// the shipped USA object INI (`strings assets.data`): AmericaInfantryRanger,
+// AmericaInfantryMissileDefender, AmericaTankCrusader, AmericaVehicleHumvee,
+// AmericaVehicleTomahawk, AmericaJetRaptor. Same v1 deferral as kLogicalMap: a
+// full per-faction table is a later task; raw/substring template names still
+// resolve directly via the ciContains fallback.
+// ---------------------------------------------------------------------------
+static const LogicalMap kUnitLogicalMap[] = {
+  { "ranger",           "AmericaInfantryRanger" },
+  { "missile_defender", "MissileDefender" },
+  { "crusader_tank",    "Crusader" },
+  { "humvee",           "Humvee" },
+  { "tomahawk",         "Tomahawk" },
+  { "raptor_jet",       "Raptor" },
+};
+
+// Does a team's unit-slot template `tmpl` satisfy the requested `req` (a
+// logical unit enum name, or a raw template name / substring)?
+static Bool unitTemplateMatchesRequest(const char* tmpl, const AsciiString& req)
+{
+  for (const LogicalMap& m : kUnitLogicalMap)
+    if (req == m.logical) return matchesAnyKeyword(tmpl, m.keywords);
+  return ciContains(tmpl, req.str());
+}
+
+// Does `pp` own at least one team prototype with a real unit composition
+// (m_numUnitsInfo > 0)? EVERY player -- human or AI -- always owns an implicit
+// singleton "team<playername>" wrapping their own directly-owned objects, so
+// getPlayerTeams()->empty() is never a useful signal here (unlike build lists,
+// which really are NULL for humans). set_team_priorities needs a player that
+// owns actual PRODUCTION team templates (composed of real unit slots) to have
+// anything meaningful to prioritize.
+static Bool hasProductionTeams(Player* pp)
+{
+  if (!pp || !pp->getPlayerTeams()) return FALSE;
+  for (TeamPrototype* proto : *pp->getPlayerTeams())
+    if (proto && proto->getTemplateInfo()->m_numUnitsInfo > 0) return TRUE;
+  return FALSE;
+}
+
 void ControlBridge::tick()
 {
   if (!TheGameLogic || !ThePlayerList) return;
@@ -381,15 +514,16 @@ void ControlBridge::tick()
   jsonReadInt(buf, "id", id);
   jsonReadStr(buf, "op", op);
 
-  // Dispatch. `observe` is the read-op; `set_build_list` is the first write-op
-  // (Phase 3, routed through apply()); every other op still gets an explicit
-  // "not implemented" reply (coverage, never a silent drop).
+  // Dispatch. `observe` is the read-op; `set_build_list` and
+  // `set_team_priorities` are Phase 3 write-ops routed through apply(); every
+  // other op still gets an explicit "not implemented" reply (coverage, never a
+  // silent drop).
   AsciiString result;
   if (op == "observe") {
     Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
     result = observe(who);
     if (result.isEmpty()) result = "{}";
-  } else if (op == "set_build_list") {
+  } else if (op == "set_build_list" || op == "set_team_priorities") {
     result = apply(op, buf);
   } else {
     result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
@@ -599,6 +733,98 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
       result.concat('"');
       jsonEscape(result, logi ? logi : tmpl);
       result.concat('"');
+    }
+    result.concat("]}");
+    return result;
+  }
+
+  if (op == "set_team_priorities") {
+    // 1) Parse args.teams[] depth/scope-aware: locate "args", brace-match its
+    //    extent, and read "teams" (an array of {unit,priority,count?} objects)
+    //    only from WITHIN those bounds.
+    std::vector<TeamPriorityReq> teams;
+    const char* argsVal = jsonFindValue(req, "args");
+    if (argsVal && *argsVal == '{') {
+      const char* argsEnd = jsonMatchBracket(argsVal);
+      if (argsEnd) jsonReadTeamsArrayIn(argsVal, argsEnd, teams);
+    }
+    if (teams.empty())
+      return "{\"accepted\":false,\"reason\":\"missing or empty args.teams[]\"}";
+
+    if (!ThePlayerList)
+      return "{\"accepted\":false,\"reason\":\"no player list\"}";
+
+    // 2) Pick a team-owning player (bridge player first, else first player
+    //    with actual PRODUCTION team prototypes) -- same selection policy as
+    //    set_build_list, adapted for hasProductionTeams() (see its comment:
+    //    a raw non-empty getPlayerTeams() is not a useful signal here, unlike
+    //    build lists which really are NULL for humans).
+    Player* p = NULL;
+    if (m_bridgePlayerIndex >= 0) {
+      Player* bp = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
+      if (hasProductionTeams(bp)) p = bp;
+    }
+    if (!p) {
+      for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+        Player* q = ThePlayerList->getNthPlayer(pi);
+        if (hasProductionTeams(q)) { p = q; break; }
+      }
+    }
+    if (!p)
+      return "{\"accepted\":false,\"reason\":\"no team prototypes to prioritize\"}";
+
+    // 3) For each requested {unit,priority}, match against EVERY team
+    //    prototype's unit-slot templates (a team is a composition of up to
+    //    MAX_UNIT_TYPES unit types, not a single template -- so a request can
+    //    legitimately touch more than one prototype, e.g. "tomahawk" matching
+    //    both a pure-Tomahawk team and a mixed escort team). `count` is parsed
+    //    but not applied in v1: it would mean changing team COMPOSITION
+    //    (m_unitsInfo[].minUnits/maxUnits), not priority, and is deferred like
+    //    kLogicalMap's per-faction table.
+    std::vector<TeamPrototype*> touched;   // dedup, first-seen order (for readback)
+    Int mutatedCount = 0;
+    for (const TeamPriorityReq& te : teams) {
+      for (TeamPrototype* proto : *p->getPlayerTeams()) {
+        if (!proto) continue;
+        const TeamTemplateInfo* info = proto->getTemplateInfo();
+        Bool matches = FALSE;
+        const Int n = (info->m_numUnitsInfo < (Int)TeamTemplateInfo::MAX_UNIT_TYPES)
+                        ? info->m_numUnitsInfo : (Int)TeamTemplateInfo::MAX_UNIT_TYPES;
+        for (Int i = 0; i < n; ++i) {
+          if (unitTemplateMatchesRequest(info->m_unitsInfo[i].unitThingName.str(), te.unit)) {
+            matches = TRUE;
+            break;
+          }
+        }
+        if (!matches) continue;
+        // m_productionPriority is `mutable Int` (Phase 0 proved this safe);
+        // const_cast per the task brief for clarity at the call site.
+        const_cast<TeamTemplateInfo*>(info)->m_productionPriority = te.priority;
+        ++mutatedCount;
+        Bool already = FALSE;
+        for (TeamPrototype* t : touched) if (t == proto) { already = TRUE; break; }
+        if (!already) touched.push_back(proto);
+      }
+    }
+
+    // 4) Coverage, not silence: if NOTHING requested matched ANY team
+    //    prototype, report accepted:false rather than a fake success --
+    //    nothing was mutated (mirrors set_build_list's matched==0 case).
+    if (mutatedCount == 0)
+      return "{\"accepted\":false,\"reason\":\"no requested units matched any team\"}";
+
+    // 5) active_teams is read back from the ACTUAL mutated prototypes (name +
+    //    resulting priority), proving the change rather than echoing the ask.
+    AsciiString result = "{\"accepted\":true,\"active_teams\":[";
+    Bool first = TRUE;
+    for (TeamPrototype* proto : touched) {
+      if (!first) result.concat(',');
+      first = FALSE;
+      result.concat("{\"name\":\"");
+      jsonEscape(result, proto->getName().str());
+      AsciiString tmp;
+      tmp.format("\",\"priority\":%d}", proto->getTemplateInfo()->m_productionPriority);
+      result.concat(tmp);
     }
     result.concat("]}");
     return result;
