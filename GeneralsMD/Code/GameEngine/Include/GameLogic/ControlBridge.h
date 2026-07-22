@@ -13,6 +13,7 @@ public:
   void init();                       // enumerate regions from the loaded map
   void tick();                       // per-frame; drains the WS command queue (Phase 2)
   AsciiString observe(Int playerIndex);        // spec §4 JSON
+  AsciiString apply(const AsciiString& op, const char* requestJson);  // Phase 3 write-ops
   const std::vector<BridgeRegion>& regions() const { return m_regions; }
   const BridgeRegion* regionByName(const AsciiString& n) const;
   Int bridgePlayerIndex() const { return m_bridgePlayerIndex; }
