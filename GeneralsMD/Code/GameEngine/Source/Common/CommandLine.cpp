@@ -778,6 +778,17 @@ Int parseAIDifficulty(char *args[], int num)
 	}
 	return 1;
 }
+
+// GeneralsX @build dx8wasm - LLM-general MCP bridge: opt-in real-time slow-mo
+// (FramePacer logic-time-scale) so a slow external strategist loop (LLM
+// round-trips of 1-5s) can keep up with a live skirmish. OFF by default;
+// only enabled when this arg is present on the command line, so a normal
+// launch (no -slowmo) is completely unaffected.
+Int parseSlowmo(char *args[], int)
+{
+	TheWritableGlobalData->m_wasmSlowmoSkirmish = TRUE;
+	return 1;
+}
 #endif
 
 #if defined(RTS_DEBUG)
@@ -1400,6 +1411,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-aidifficulty", parseAIDifficulty },
 	{ "-campaign", parseCampaign },
 	{ "-skirmishonly", parseSkirmishOnly },
+	{ "-slowmo", parseSlowmo },
 #endif
 
 #ifdef DEBUG_LOGGING

@@ -361,6 +361,7 @@ public:
 	Bool m_wasmCampaign;					///< -campaign: launch the -file map as a single-player mission (scripts/objectives) instead of a synthetic skirmish
 	Bool m_wasmSkirmishOnly;				///< -skirmishonly: skirmish-only build. Hides campaign/Challenge/Load/Replay and forces cinematics off; Skirmish, LAN and Options stay.
 	Int m_wasmAIDifficulty;					///< -aidifficulty easy|medium|hard: wasm -file skirmish AI level (0=easy,1=med,2=hard/brutal; -1=default easy)
+	Bool m_wasmSlowmoSkirmish;				///< -slowmo: wasm -file skirmish scales down logic time (via FramePacer) so a slow external strategist loop can keep up. Opt-in only; off by default.
 
 	std::vector<AsciiString> m_simulateReplays; ///< If not empty, simulate this list of replays and exit.
 	Int m_simulateReplayJobs; ///< Maximum number of processes to use for simulation, or SIMULATE_REPLAYS_SEQUENTIAL for sequential simulation

@@ -962,6 +962,19 @@ void GameEngine::init()
 				TheSkirmishGameInfo->startGame(0);
 				InitRandom(TheSkirmishGameInfo->getSeed());
 
+				// LLM-general MCP bridge (opt-in, -slowmo only): scale the simulation
+				// time down so a slow external strategist loop (LLM round-trips of
+				// 1-5s) can keep up with a live skirmish. Rendering keeps running at
+				// full rate; only logic time is scaled. 8 logic fps vs the ~30fps
+				// base is roughly a 0.25x slow-mo. OFF unless -slowmo was passed on
+				// the command line -- a normal launch never touches TheFramePacer here.
+				if (TheGlobalData->m_wasmSlowmoSkirmish && TheFramePacer)
+				{
+					TheFramePacer->setLogicTimeScaleFps(8);
+					TheFramePacer->enableLogicTimeScale(TRUE);
+					fprintf(stderr, "[BRIDGE] logic slow-mo enabled: 8 fps\n");
+				}
+
 				TheWritableGlobalData->m_mapName = TheGlobalData->m_initialFile;
 				GameMessage *msg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
 				msg->appendIntegerArgument(GAME_SKIRMISH);
