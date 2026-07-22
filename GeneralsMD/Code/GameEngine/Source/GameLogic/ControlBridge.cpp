@@ -152,6 +152,29 @@ void combatUnitCb(Object* obj, void* ud)
   a->units.push_back(obj);
 }
 
+// Find ONE cheap/mobile unit for `scout` (spec A.5): the first INFANTRY or
+// VEHICLE object that is NOT a dozer/harvester/structure and has an AI
+// interface we can issue a MOVE order through. A dedicated recon unit would
+// be ideal (fastest/cheapest scout template), but any one mobile unit is fine
+// for v1 -- picking the FIRST such unit found keeps the op O(1) instead of
+// requiring a cost/speed comparison table we don't have yet.
+struct ScoutAccum {
+  Object* unit;   // first match, or NULL
+};
+
+void scoutUnitCb(Object* obj, void* ud)
+{
+  ScoutAccum* a = (ScoutAccum*)ud;
+  if (a->unit) return;   // already found one -- first match wins
+  if (!obj) return;
+  if (obj->isKindOf(KINDOF_STRUCTURE)) return;
+  if (obj->isKindOf(KINDOF_DOZER))     return;
+  if (obj->isKindOf(KINDOF_HARVESTER)) return;
+  if (!(obj->isKindOf(KINDOF_INFANTRY) || obj->isKindOf(KINDOF_VEHICLE))) return;
+  if (!obj->getAIUpdateInterface())    return;   // must be commandable
+  a->unit = obj;
+}
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -543,16 +566,16 @@ void ControlBridge::tick()
   jsonReadInt(buf, "id", id);
   jsonReadStr(buf, "op", op);
 
-  // Dispatch. `observe` is the read-op; `set_build_list`, `set_team_priorities`
-  // and `attack` are Phase 3 write-ops routed through apply(); every other op
-  // still gets an explicit "not implemented" reply (coverage, never a silent
-  // drop).
+  // Dispatch. `observe` is the read-op; `set_build_list`, `set_team_priorities`,
+  // `attack` and `scout` are Phase 3 write-ops routed through apply(); every
+  // other op still gets an explicit "not implemented" reply (coverage, never a
+  // silent drop).
   AsciiString result;
   if (op == "observe") {
     Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
     result = observe(who);
     if (result.isEmpty()) result = "{}";
-  } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack") {
+  } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout") {
     result = apply(op, buf);
   } else {
     result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
@@ -963,6 +986,74 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
       result.concat(",\"warning\":\"target_region not currently visible \\u2014 "
                     "committing into fog; enemy strength there is unknown\"");
     result.concat("}");
+    return result;
+  }
+
+  if (op == "scout") {
+    // spec A.5: send ONE cheap/mobile unit on a plain MOVE (not attack-move) to
+    // a named region's center, to buy sight vs fog. No fog check needed here --
+    // scouting IS how you clear fog, unlike `attack` which annotates fog as a
+    // warning.
+
+    // 1) Parse args.region depth/scope-aware.
+    AsciiString regionName;
+    const char* argsVal = jsonFindValue(req, "args");
+    if (argsVal && *argsVal == '{') {
+      const char* argsEnd = jsonMatchBracket(argsVal);
+      if (argsEnd) jsonReadStrIn(argsVal, argsEnd, "region", regionName);
+    }
+    if (regionName.isEmpty())
+      return "{\"accepted\":false,\"reason\":\"missing args.region\"}";
+
+    // 2) Resolve the region -> its center Coord3D. Unknown name is a hard reject.
+    const BridgeRegion* region = regionByName(regionName);
+    if (!region)
+      return "{\"accepted\":false,\"reason\":\"unknown region\"}";
+    const Coord3D center = region->center;
+
+    if (!ThePlayerList)
+      return "{\"accepted\":false,\"reason\":\"no player list\"}";
+
+    // 3) Pick a player that owns a scoutable (mobile) unit: bridge player
+    //    first, else the first player that owns one (same fallback policy as
+    //    attack/set_build_list/set_team_priorities).
+    ScoutAccum acc; acc.unit = NULL;
+    if (m_bridgePlayerIndex >= 0) {
+      Player* bp = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
+      if (bp) bp->iterateObjects(scoutUnitCb, &acc);
+    }
+    if (!acc.unit) {
+      for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+        Player* q = ThePlayerList->getNthPlayer(pi);
+        if (!q) continue;
+        q->iterateObjects(scoutUnitCb, &acc);
+        if (acc.unit) break;
+      }
+    }
+    // Resource-only rejection: nothing to send.
+    if (!acc.unit)
+      return "{\"accepted\":false,\"reason\":\"no scoutable unit available\"}";
+
+    // 4) Issue a plain MOVE (not attack-move) toward the region center.
+    //    CMD_FROM_PLAYER for the same reason as `attack`: it gates
+    //    forbidPlayerCommands and clips the goal position to the map (human-
+    //    mirror semantics), matching the fix already applied to the attack op.
+    AIUpdateInterface* ai = acc.unit->getAIUpdateInterface();
+    ai->aiMoveToPosition(&center, CMD_FROM_PLAYER);
+
+    const ThingTemplate* tt = acc.unit->getTemplate();
+    const char* tmplName = tt ? tt->getName().str() : "";
+
+    fprintf(stderr, "[BRIDGE] scout: dispatched '%s' to region '%s'\n",
+            tmplName, region->name.str());
+    fflush(stderr);
+
+    // 5) Result.
+    AsciiString result = "{\"accepted\":true,\"scout_dispatched\":\"";
+    jsonEscape(result, tmplName);
+    result.concat("\",\"region\":\"");
+    jsonEscape(result, region->name.str());
+    result.concat("\"}");
     return result;
   }
 
