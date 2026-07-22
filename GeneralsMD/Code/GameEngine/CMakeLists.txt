@@ -833,7 +833,6 @@ set(GAMEENGINE_SRC
     Source/GameLogic/AI/AIPlayer.cpp
     Source/GameLogic/AI/AISkirmishPlayer.cpp
     Source/GameLogic/ControlBridge.cpp
-    Source/GameLogic/ControlSpike.cpp
     Source/GameLogic/AI/AIStates.cpp
     Source/GameLogic/AI/AITNGuard.cpp
     Source/GameLogic/AI/Squad.cpp
