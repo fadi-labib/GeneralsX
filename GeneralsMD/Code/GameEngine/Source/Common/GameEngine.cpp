@@ -102,6 +102,7 @@ extern "C" void gx_apply_pending_render_resolution();
 #include "GameLogic/ObjectCreationList.h"
 #include "GameLogic/Weapon.h"
 #include "GameLogic/GameLogic.h"
+#include "GameLogic/ControlBridge.h"
 #include "GameLogic/Object.h"
 #include "GameLogic/Locomotor.h"
 #include "GameLogic/RankInfo.h"
@@ -1321,14 +1322,15 @@ static void wasm_stress_spawn()
 // while(!quit) loop never returns to the event loop, so rendered frames are never
 // composited to the canvas; emscripten_set_main_loop yields each frame so WebGL
 // presents. See execute() below.
-extern void control_spike_tick(void);   // Phase-0 spike (Source/GameLogic/ControlSpike.cpp)
-
 static void wasm_engine_frame()
 {
 	if (!TheGameEngine || TheGameEngine->getQuitting()) { emscripten_cancel_main_loop(); return; }
 	gx_apply_pending_render_resolution();
 	wasm_stress_spawn();
-	control_spike_tick();
+	// LLM-general control bridge: drain the /control WS at render framerate so the
+	// round-trip is responsive (the logic clock is slow headless). tick() is a
+	// no-op until a match is up. This replaces the retired Phase-0 spike call.
+	if (TheControlBridge) TheControlBridge->tick();
 	double pf_t0 = emscripten_get_now();
 	// A single frame's exception must NOT kill the whole game. The old code called
 	// emscripten_cancel_main_loop() here, which permanently tears down the rAF loop

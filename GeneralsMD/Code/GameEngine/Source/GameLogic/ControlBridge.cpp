@@ -12,6 +12,12 @@
 #include "Common/KindOf.h"              // KINDOF_*
 #include <utility>
 #include <vector>
+#include <cstdlib>                      // atoi
+#include <cstring>                      // strstr
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/threading.h>       // MAIN_THREAD_EM_ASM(_INT): proxy to the browser main thread
+#endif
 
 ControlBridge *TheControlBridge = NULL;
 
@@ -137,15 +143,64 @@ void ControlBridge::init()
   fflush(stderr);
 }
 
+// ---------------------------------------------------------------------------
+// Minimal flat-envelope JSON reader. The wire request is the fixed shape
+//   {"id":<int>,"op":"<str>","args":{...}}
+// (settled in Task 2.1). We only need `id` (int) and `op` (string) here; `args`
+// is left raw because only `observe` is wired this task. This is NOT a general
+// JSON parser — it scans for a top-level "key": and reads the scalar that
+// follows. The flat envelope puts id/op before args, so the first match wins.
+// ---------------------------------------------------------------------------
+static const char* jsonFindValue(const char* s, const char* key)
+{
+  AsciiString pat; pat.format("\"%s\"", key);
+  const char* p = strstr(s, pat.str());
+  if (!p) return NULL;
+  p += pat.getLength();
+  while (*p && *p != ':') ++p;          // skip to the ':'
+  if (*p != ':') return NULL;
+  ++p;
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') ++p;
+  return p;                             // points at the value's first char
+}
+
+static Bool jsonReadInt(const char* s, const char* key, Int& out)
+{
+  const char* p = jsonFindValue(s, key);
+  if (!p) return FALSE;
+  out = atoi(p);
+  return TRUE;
+}
+
+static Bool jsonReadStr(const char* s, const char* key, AsciiString& out)
+{
+  const char* p = jsonFindValue(s, key);
+  if (!p || *p != '"') return FALSE;
+  ++p;
+  out.clear();
+  for (; *p && *p != '"'; ++p) {
+    if (*p == '\\' && p[1]) {
+      ++p;
+      switch (*p) {
+        case 'n': out.concat('\n'); break;
+        case 't': out.concat('\t'); break;
+        case 'r': out.concat('\r'); break;
+        default:  out.concat(*p);   break;   // \" \\ \/ etc. pass through literally
+      }
+    } else {
+      out.concat(*p);
+    }
+  }
+  return TRUE;
+}
+
 void ControlBridge::tick()
 {
-  // Phase 2 (Task 2.3) will drain the WS command queue here. For Task 1.2 this is
-  // a TEMPORARY, fire-once debug emitter so the headless test can capture a real
-  // observation: at an early logic frame (the wasm logic clock is slow headless)
-  // it prints one observe() payload to stderr. The "[BRIDGE][OBS]" prefix passes
-  // serve-game.mjs's printErr filter so it reaches the browser console.
   if (!TheGameLogic || !ThePlayerList) return;
 
+  // Default the bridge player once a match is up: prefer the local human, else
+  // the first player that owns buildings. (Phase 4 formalizes the bridge player;
+  // observing player 0 / the base owner is fine for the round-trip.)
   if (m_bridgePlayerIndex < 0) {
     Player* lp = ThePlayerList->getLocalPlayer();
     if (lp && lp->countBuildings() > 0) {
@@ -158,13 +213,47 @@ void ControlBridge::tick()
     }
   }
 
-  static Bool s_emitted = FALSE;
-  if (!s_emitted && m_bridgePlayerIndex >= 0 && TheGameLogic->getFrame() >= 90) {
-    AsciiString j = observe(m_bridgePlayerIndex);
-    fprintf(stderr, "[BRIDGE][OBS] %s\n", j.str());
-    fflush(stderr);
-    s_emitted = TRUE;
+#ifdef __EMSCRIPTEN__
+  // Drain at most one queued control request per frame. gxControl.poll() copies
+  // the next request into our stack buffer and returns its byte length (0 =
+  // none). v1 ops are tiny JSON; 8192 comfortably exceeds any request (the
+  // browser poll() drops anything larger, so this must stay ample).
+  char buf[8192];
+  Int n = MAIN_THREAD_EM_ASM_INT(
+    { return (typeof gxControl !== 'undefined') ? gxControl.poll($0, $1) : 0; },
+    (Int)buf, (Int)sizeof(buf));
+  if (n <= 0) return;
+  if (n >= (Int)sizeof(buf)) n = (Int)sizeof(buf) - 1;
+  buf[n] = 0;
+
+  Int id = 0;
+  AsciiString op;
+  jsonReadInt(buf, "id", id);
+  jsonReadStr(buf, "op", op);
+
+  // Dispatch. Only `observe` is wired this task; every other op gets an explicit
+  // "not implemented" reply (coverage, never a silent drop) — Phase 3 adds the
+  // apply ops.
+  AsciiString result;
+  if (op == "observe") {
+    Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
+    result = observe(who);
+    if (result.isEmpty()) result = "{}";
+  } else {
+    result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
   }
+
+  // Reply {"id":<id>,"result":<result>}. Built with concat because `result` can
+  // exceed AsciiString::format's 2048-char per-call cap (observe() is large).
+  AsciiString reply;
+  reply.format("{\"id\":%d,\"result\":", id);
+  reply.concat(result);
+  reply.concat("}");
+
+  MAIN_THREAD_EM_ASM(
+    { if (typeof gxControl !== 'undefined') gxControl.deliver($0, $1); },
+    (Int)reply.str(), (Int)reply.getLength());
+#endif // __EMSCRIPTEN__
 }
 
 AsciiString ControlBridge::observe(Int playerIndex)
