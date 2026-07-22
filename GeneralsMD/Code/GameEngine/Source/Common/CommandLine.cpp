@@ -789,6 +789,22 @@ Int parseSlowmo(char *args[], int)
 	TheWritableGlobalData->m_wasmSlowmoSkirmish = TRUE;
 	return 1;
 }
+
+// GeneralsX @build dx8wasm - LLM-general MCP bridge opt-in. Bundles the pieces a
+// live LLM strategist session needs so a plain launch stays untouched:
+//  * slow-mo (reuses the -slowmo FramePacer scaling) so a 1-5s LLM round-trip can
+//    keep up with the skirmish clock;
+//  * marks the boot as bridge-driven (m_wasmBridgeSkirmish) — the ControlBridge
+//    binds m_bridgePlayerIndex to the knob-having skirmish AI (the player that
+//    owns a build list AND production teams), NOT the human slot, so observe()
+//    and every write-op act on one coherent, controllable player (fixes C4).
+// Off by default; only set when -bridge is on the command line.
+Int parseBridge(char *args[], int)
+{
+	TheWritableGlobalData->m_wasmBridgeSkirmish = TRUE;
+	TheWritableGlobalData->m_wasmSlowmoSkirmish = TRUE;   // slow the sim so a slow LLM loop keeps up
+	return 1;
+}
 #endif
 
 #if defined(RTS_DEBUG)
@@ -1412,6 +1428,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-campaign", parseCampaign },
 	{ "-skirmishonly", parseSkirmishOnly },
 	{ "-slowmo", parseSlowmo },
+	{ "-bridge", parseBridge },
 #endif
 
 #ifdef DEBUG_LOGGING

@@ -533,14 +533,40 @@ void ControlBridge::tick()
 {
   if (!TheGameLogic || !ThePlayerList) return;
 
-  // Default the bridge player once a match is up: prefer the local human, else
-  // the first player that owns buildings. (Phase 4 formalizes the bridge player;
-  // observing player 0 / the base owner is fine for the round-trip.)
+  // Bind the bridge player once, at match start (Phase 4.2). The design steers
+  // an AISkirmishPlayer's knobs, so the bridge player MUST be the "knob-having"
+  // skirmish AI: the one that owns BOTH a build list (set_build_list steers it)
+  // AND production team prototypes (set_team_priorities steers them) and gets an
+  // army built (attack/scout command it). The human slot has none of these
+  // (getBuildList() is NULL for PLAYER_HUMAN, and it owns only the implicit
+  // singleton team), so binding to the human — as the pre-4.2 default did — left
+  // the production ops with nothing to steer and, worse, made observe() read the
+  // human's fog while the write-ops fell back to the AI's units (concern C4:
+  // scouting the AI's unit reveals nothing in the human's observe()). Binding
+  // observe() and all four write-ops to ONE knob-having AI fixes that.
+  //
+  // Done lazily here (not in the GameEngine bootstrap) because build lists and
+  // team prototypes only exist AFTER the players are populated, which is later
+  // than the bootstrap. We bind to the FIRST player that owns a build list AND
+  // production teams (deterministic). If a build-list owner exists but its teams
+  // aren't set up yet, we WAIT (leave the index unset and retry next frame)
+  // rather than mis-bind. Only when the map has no build-list owner at all (a
+  // non-skirmish scenario) do we fall back to the first base owner.
   if (m_bridgePlayerIndex < 0) {
-    Player* lp = ThePlayerList->getLocalPlayer();
-    if (lp && lp->countBuildings() > 0) {
-      m_bridgePlayerIndex = lp->getPlayerIndex();
-    } else {
+    Bool sawBuildListOwner = FALSE;
+    for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+      Player* p = ThePlayerList->getNthPlayer(pi);
+      if (!p || !p->getBuildList()) continue;         // human/base-less players excluded
+      sawBuildListOwner = TRUE;
+      if (hasProductionTeams(p)) {
+        m_bridgePlayerIndex = p->getPlayerIndex();
+        fprintf(stderr, "[BRIDGE] bound bridge player = %d (side '%s', skirmishAI=%d)\n",
+                m_bridgePlayerIndex, p->getSide().str(), p->isSkirmishAIPlayer() ? 1 : 0);
+        fflush(stderr);
+        break;
+      }
+    }
+    if (m_bridgePlayerIndex < 0 && !sawBuildListOwner) {
       for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
         Player* p = ThePlayerList->getNthPlayer(pi);
         if (p && p->countBuildings() > 0) { m_bridgePlayerIndex = p->getPlayerIndex(); break; }
@@ -714,13 +740,15 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     if (!ThePlayerList)
       return "{\"accepted\":false,\"reason\":\"no player list\"}";
 
-    // 2) Pick a build-list-owning player (bridge player first, else first AI).
+    // 2) Pick the target player. AUTHORITATIVE on m_bridgePlayerIndex (Phase 4.2):
+    //    when the bridge player is bound, act on THAT player only — never fall
+    //    back to "first build-list owner", so the op steers exactly the player
+    //    observe() reports (C4). The fallback scan is used only when the bridge
+    //    player is unset (m_bridgePlayerIndex < 0).
     Player* p = NULL;
     if (m_bridgePlayerIndex >= 0) {
-      Player* bp = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
-      if (bp && bp->getBuildList()) p = bp;
-    }
-    if (!p) {
+      p = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
+    } else {
       for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
         Player* q = ThePlayerList->getNthPlayer(pi);
         if (q && q->getBuildList()) { p = q; break; }
@@ -806,23 +834,23 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     if (!ThePlayerList)
       return "{\"accepted\":false,\"reason\":\"no player list\"}";
 
-    // 2) Pick a team-owning player (bridge player first, else first player
-    //    with actual PRODUCTION team prototypes) -- same selection policy as
-    //    set_build_list, adapted for hasProductionTeams() (see its comment:
-    //    a raw non-empty getPlayerTeams() is not a useful signal here, unlike
-    //    build lists which really are NULL for humans).
+    // 2) Pick the target player. AUTHORITATIVE on m_bridgePlayerIndex (Phase 4.2):
+    //    when the bridge player is bound, act on THAT player only — never fall
+    //    back to "first team-owning player", so the op steers exactly the player
+    //    observe() reports (C4). The fallback scan (first player with actual
+    //    PRODUCTION team prototypes; see hasProductionTeams()'s comment on why a
+    //    raw non-empty getPlayerTeams() is not a useful signal) runs only when the
+    //    bridge player is unset (m_bridgePlayerIndex < 0).
     Player* p = NULL;
     if (m_bridgePlayerIndex >= 0) {
-      Player* bp = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
-      if (hasProductionTeams(bp)) p = bp;
-    }
-    if (!p) {
+      p = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
+    } else {
       for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
         Player* q = ThePlayerList->getNthPlayer(pi);
         if (hasProductionTeams(q)) { p = q; break; }
       }
     }
-    if (!p)
+    if (!p || !hasProductionTeams(p))
       return "{\"accepted\":false,\"reason\":\"no team prototypes to prioritize\"}";
 
     // 3) For each requested {unit,priority}, match against EVERY team
@@ -910,17 +938,19 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     if (!ThePlayerList)
       return "{\"accepted\":false,\"reason\":\"no player list\"}";
 
-    // 3) Pick a player that owns attack-role units: bridge player first, else the
-    //    first player that owns any (same selection policy as set_build_list /
-    //    set_team_priorities — the human bridge player owns no combat units in the
-    //    current headless boot, so this falls through to the skirmish AI that does).
+    // 3) Pick the player to command. AUTHORITATIVE on m_bridgePlayerIndex (Phase
+    //    4.2): when the bridge player is bound, command ONLY that player's own
+    //    attack-role units — never fall back to another player. This is exactly
+    //    what C4 requires: fog is per-player, so the attack must move the bridge
+    //    player's OWN units (moving a foreign player's units would reveal nothing
+    //    in the bridge player's observe()). The fallback scan (first player owning
+    //    attack-role units) runs only when the bridge player is unset (< 0).
     Player* p = NULL;
     CombatAccum acc;
     if (m_bridgePlayerIndex >= 0) {
-      Player* bp = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
-      if (bp) { bp->iterateObjects(combatUnitCb, &acc); if (!acc.units.empty()) p = bp; }
-    }
-    if (!p) {
+      p = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
+      if (p) p->iterateObjects(combatUnitCb, &acc);
+    } else {
       for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
         Player* q = ThePlayerList->getNthPlayer(pi);
         if (!q) continue;
@@ -929,7 +959,8 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
         if (!acc.units.empty()) { p = q; break; }
       }
     }
-    // Resource-only rejection: nothing to send.
+    // Resource-only rejection: nothing to send (the bridge player's army may not
+    // be up yet headless — see concern C1 — but we never command a foreign slot).
     if (!p || acc.units.empty())
       return "{\"accepted\":false,\"reason\":\"no attack-role teams available\"}";
 
@@ -1014,15 +1045,18 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     if (!ThePlayerList)
       return "{\"accepted\":false,\"reason\":\"no player list\"}";
 
-    // 3) Pick a player that owns a scoutable (mobile) unit: bridge player
-    //    first, else the first player that owns one (same fallback policy as
-    //    attack/set_build_list/set_team_priorities).
+    // 3) Pick the player to scout with. AUTHORITATIVE on m_bridgePlayerIndex
+    //    (Phase 4.2): when the bridge player is bound, dispatch ONLY one of that
+    //    player's own mobile units — never fall back to another player. Fog is
+    //    per-player (C4): the whole point of scouting is to clear the BRIDGE
+    //    player's fog, so the moving unit must be the bridge player's own. The
+    //    fallback scan (first player owning a scoutable unit) runs only when the
+    //    bridge player is unset (< 0).
     ScoutAccum acc; acc.unit = NULL;
     if (m_bridgePlayerIndex >= 0) {
       Player* bp = ThePlayerList->getNthPlayer(m_bridgePlayerIndex);
       if (bp) bp->iterateObjects(scoutUnitCb, &acc);
-    }
-    if (!acc.unit) {
+    } else {
       for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
         Player* q = ThePlayerList->getNthPlayer(pi);
         if (!q) continue;
@@ -1030,7 +1064,8 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
         if (acc.unit) break;
       }
     }
-    // Resource-only rejection: nothing to send.
+    // Resource-only rejection: nothing to send (the bridge player's army may not
+    // be up yet headless — see concern C1 — but we never command a foreign slot).
     if (!acc.unit)
       return "{\"accepted\":false,\"reason\":\"no scoutable unit available\"}";
 

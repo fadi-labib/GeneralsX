@@ -1016,6 +1016,7 @@ GlobalData::GlobalData()
 	m_wasmSkirmishOnly = FALSE;  // -skirmishonly: skirmish-only build (see parseSkirmishOnly)
 	m_wasmAIDifficulty = -1;   // -aidifficulty override; -1 => default (Easy)
 	m_wasmSlowmoSkirmish = FALSE;
+	m_wasmBridgeSkirmish = FALSE;
 
 	m_simulateReplays.clear();
 	m_simulateReplayJobs = SIMULATE_REPLAYS_SEQUENTIAL;

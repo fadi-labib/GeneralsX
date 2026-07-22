@@ -975,6 +975,16 @@ void GameEngine::init()
 					fprintf(stderr, "[BRIDGE] logic slow-mo enabled: 8 fps\n");
 				}
 
+				// -bridge: LLM-general MCP opt-in. The actual bridge-player binding
+				// happens lazily in ControlBridge::tick() once the match is fully up
+				// (build lists + production team prototypes exist only after the
+				// players are populated, which is later than this bootstrap point):
+				// tick() binds m_bridgePlayerIndex to the first player that owns BOTH
+				// a build list AND production teams — the knob-having skirmish AI, not
+				// the human slot. This marker just records that the opt-in was taken.
+				if (TheGlobalData->m_wasmBridgeSkirmish)
+					fprintf(stderr, "[BRIDGE] bridge opt-in enabled (-bridge): bridge player = knob-having skirmish AI\n");
+
 				TheWritableGlobalData->m_mapName = TheGlobalData->m_initialFile;
 				GameMessage *msg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
 				msg->appendIntegerArgument(GAME_SKIRMISH);
