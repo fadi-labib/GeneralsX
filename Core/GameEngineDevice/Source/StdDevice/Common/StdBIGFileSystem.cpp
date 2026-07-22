@@ -650,47 +650,62 @@ void StdBIGFileSystem::closeAllFiles() {
 
 Bool StdBIGFileSystem::loadBigFilesFromDirectory(AsciiString dir, AsciiString fileMask, Bool overwrite) {
 
-#ifdef __EMSCRIPTEN__
-	// GeneralsX @build dx8wasm - restore Zero-Hour-over-base-Generals archive precedence.
-	// On desktop, ZH and base Generals .big archives live in SEPARATE directories loaded
-	// in two passes (ZH first, first-match-wins), so ZH overrides base. The emscripten
-	// file_packager flattens every archive into "/", so they load in a SINGLE alphabetical
-	// pass. With the default first-match-wins, base "maps.big" (sorts before "MapsZH.big")
-	// shadowed the ZH MapCache.ini: the engine saw only 55 base-Generals maps, ShellMapMD
-	// was absent (-> black menu backdrop), and the map picker/lobby lost ~95 ZH maps.
-	// Because each "<name>ZH.big" always sorts AFTER its base "<name>.big", switching to
-	// last-match-wins makes the ZH archive win for every shared file, matching retail.
-	overwrite = TRUE;
-#endif
-
 	FilenameList filenameList;
 	TheLocalFileSystem->getFileListInDirectory(dir, "", fileMask, filenameList, TRUE);
 
 	Bool actuallyAdded = FALSE;
-	FilenameListIter it = filenameList.begin();
-	while (it != filenameList.end()) {
+
+	// Load one archive into the directory tree with the given override policy.
+	// (Shared by the normal single pass and the wasm two-pass precedence load below.)
+	auto loadOne = [&](const AsciiString &path, Bool ow) {
 #if RTS_ZEROHOUR
 		// TheSuperHackers @bugfix bobtista 18/11/2025 Skip duplicate INIZH.big in Data\INI to prevent CRC mismatches.
 		// English, Chinese, and Korean SKUs shipped with two INIZH.big files (one in Run directory, one in Run\Data\INI).
 		// The DeleteFile cleanup doesn't work on EA App/Origin installs because the folder is not writable, so we skip loading it instead.
-		if (it->endsWithNoCase("Data\\INI\\INIZH.big") || it->endsWithNoCase("Data/INI/INIZH.big")) {
-			it++;
-			continue;
-		}
+		if (path.endsWithNoCase("Data\\INI\\INIZH.big") || path.endsWithNoCase("Data/INI/INIZH.big"))
+			return;
 #endif
-
-		ArchiveFile *archiveFile = openArchiveFile((*it).str());
-
+		ArchiveFile *archiveFile = openArchiveFile(path.str());
 		if (archiveFile != nullptr) {
-			DEBUG_LOG(("StdBIGFileSystem::loadBigFilesFromDirectory - loading %s into the directory tree.", (*it).str()));
-			loadIntoDirectoryTree(archiveFile, overwrite);
-			m_archiveFileMap[(*it)] = archiveFile;
-			DEBUG_LOG(("StdBIGFileSystem::loadBigFilesFromDirectory - %s inserted into the archive file map.", (*it).str()));
+			DEBUG_LOG(("StdBIGFileSystem::loadBigFilesFromDirectory - loading %s into the directory tree.", path.str()));
+			loadIntoDirectoryTree(archiveFile, ow);
+			m_archiveFileMap[path] = archiveFile;
+			DEBUG_LOG(("StdBIGFileSystem::loadBigFilesFromDirectory - %s inserted into the archive file map.", path.str()));
 			actuallyAdded = TRUE;
 		}
+	};
 
-		it++;
-	}
+#if defined(__EMSCRIPTEN__) && RTS_ZEROHOUR
+	// GeneralsX @build dx8wasm - restore Zero-Hour-over-base-Generals archive precedence.
+	//
+	// Zero Hour is an expansion installed OVER base Generals; both ship .big archives, and
+	// several share a filename (most importantly Maps\MapCache.ini, the map index that also
+	// names the menu-backdrop shell map). When a file exists in two archives, ZH must win.
+	//
+	// On desktop that happens naturally: ZH and base archives live in SEPARATE directories
+	// loaded in two passes (ZH first, first-match-wins). But the emscripten file_packager
+	// flattens EVERY archive into one virtual dir ("/"), so getFileListInDirectory returns
+	// them in a single (alphabetical) pass. With the engine default first-match-wins, base
+	// "maps.big" (sorts before "MapsZH.big") loaded first and won -> the engine saw only the
+	// 55-map base MapCache.ini, the ZH shell map "ShellMapMD" was absent (black menu
+	// backdrop), the picker/lobby lost ~95 ZH maps, and base assets shadowed ZH everywhere.
+	//
+	// Fix it explicitly and order-independently: two passes over the flattened list. First
+	// load every BASE archive (first-match-wins among themselves), then load every ZH archive
+	// with override, so ZH wins every shared file. A ZH archive is identified by the retail
+	// "...ZH.big" suffix (MapsZH.big, INIZH.big, EnglishZH.big, AudioEnglishZH.big, ...);
+	// everything else is treated as base Generals. This does NOT depend on the enumeration/
+	// alphabetical order (unlike a plain last-match-wins), so it stays correct if the packer
+	// or filesystem ever returns archives in a different order.
+	(void)overwrite;
+	for (FilenameListIter it = filenameList.begin(); it != filenameList.end(); ++it)
+		if (!it->endsWithNoCase("ZH.big")) loadOne(*it, FALSE);   // base Generals first, no override
+	for (FilenameListIter it = filenameList.begin(); it != filenameList.end(); ++it)
+		if (it->endsWithNoCase("ZH.big")) loadOne(*it, TRUE);     // Zero Hour second, overrides base
+#else
+	for (FilenameListIter it = filenameList.begin(); it != filenameList.end(); ++it)
+		loadOne(*it, overwrite);
+#endif
 
 	return actuallyAdded;
 }
