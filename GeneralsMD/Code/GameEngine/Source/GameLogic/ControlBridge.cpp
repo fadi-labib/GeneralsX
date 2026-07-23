@@ -10,6 +10,7 @@
 #include "GameLogic/Weapon.h"           // NO_MAX_SHOTS_LIMIT
 #include "GameLogic/PartitionManager.h" // ThePartitionManager, getShroudStatusForPlayer, CellShroudStatus
 #include "Common/GameCommon.h"          // CMD_FROM_AI, CELLSHROUD_CLEAR
+#include "Common/GlobalData.h"          // TheGlobalData->m_wasmBridgeSide (Task 4.3)
 #include "Common/Player.h"              // Player, Money, Energy
 #include "Common/PlayerList.h"          // ThePlayerList
 #include "Common/Team.h"                // ObjectIterateFunc, Team
@@ -553,10 +554,20 @@ void ControlBridge::tick()
   // rather than mis-bind. Only when the map has no build-list owner at all (a
   // non-skirmish scenario) do we fall back to the first base owner.
   if (m_bridgePlayerIndex < 0) {
+    // Task 4.3: the bridge match now has TWO skirmish AIs (the bridge-steered AI
+    // AND a fighting opponent), so both own build lists + production teams and
+    // "first build-list owner" is ambiguous. The bootstrap records the bridge
+    // faction's side in m_wasmBridgeSide; when set, bind ONLY to the build-list
+    // owner whose side matches it (the bridge AI), never the opponent. When
+    // empty (non-bridge maps / legacy) fall back to the first build-list owner.
+    const AsciiString wantSide =
+        TheGlobalData ? TheGlobalData->m_wasmBridgeSide : AsciiString();
     Bool sawBuildListOwner = FALSE;
     for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
       Player* p = ThePlayerList->getNthPlayer(pi);
       if (!p || !p->getBuildList()) continue;         // human/base-less players excluded
+      if (wantSide.isNotEmpty() && p->getSide().compareNoCase(wantSide) != 0)
+        continue;                                     // skip the opponent AI: wrong faction
       sawBuildListOwner = TRUE;
       if (hasProductionTeams(p)) {
         m_bridgePlayerIndex = p->getPlayerIndex();
@@ -566,7 +577,9 @@ void ControlBridge::tick()
         break;
       }
     }
-    if (m_bridgePlayerIndex < 0 && !sawBuildListOwner) {
+    // Base-owner fallback only when NO bridge side was designated. With a
+    // designated side we WAIT for that AI rather than risk binding the opponent.
+    if (m_bridgePlayerIndex < 0 && !sawBuildListOwner && wantSide.isEmpty()) {
       for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
         Player* p = ThePlayerList->getNthPlayer(pi);
         if (p && p->countBuildings() > 0) { m_bridgePlayerIndex = p->getPlayerIndex(); break; }
@@ -680,7 +693,10 @@ AsciiString ControlBridge::observe(Int playerIndex)
 
     if (!firstEnemy) j.concat(',');
     firstEnemy = FALSE;
-    tmp.format("{\"player\":%d,\"faction\":\"", pi);
+    // is_ai: TRUE when this enemy is a fighting AISkirmishPlayer (Task 4.3). Lets
+    // an observer confirm the match has a real adversary, not an idle human slot.
+    tmp.format("{\"player\":%d,\"is_ai\":%s,\"faction\":\"",
+               pi, other->isSkirmishAIPlayer() ? "true" : "false");
     j.concat(tmp);
     jsonEscape(j, other->getSide().str());
     j.concat("\",\"last_seen\":{\"structures_seen\":");

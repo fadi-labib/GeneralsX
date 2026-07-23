@@ -1017,6 +1017,7 @@ GlobalData::GlobalData()
 	m_wasmAIDifficulty = -1;   // -aidifficulty override; -1 => default (Easy)
 	m_wasmSlowmoSkirmish = FALSE;
 	m_wasmBridgeSkirmish = FALSE;
+	m_wasmBridgeSide.clear();
 
 	m_simulateReplays.clear();
 	m_simulateReplayJobs = SIMULATE_REPLAYS_SEQUENTIAL;

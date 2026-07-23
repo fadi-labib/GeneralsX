@@ -923,14 +923,6 @@ void GameEngine::init()
 				const Int usaTmpl   = ThePlayerTemplateStore->getTemplateNumByName("FactionAmerica");
 				const Int chinaTmpl = ThePlayerTemplateStore->getTemplateNumByName("FactionChina");
 
-				GameSlot humanSlot;
-				humanSlot.setState(SLOT_PLAYER, UnicodeString(L"Player"));
-				humanSlot.setColor(0);
-				humanSlot.setPlayerTemplate(usaTmpl);
-				humanSlot.setStartPos(0);       // explicit valid pos avoids the random-assign while-loops
-				humanSlot.setTeamNumber(-1);    // -1 => no team (free-for-all: they fight)
-				TheSkirmishGameInfo->setSlot(0, humanSlot);
-
 				// -stress forces Brutal AI + huge cash for the headless perf repro. Otherwise
 				// the AI level comes from -aidifficulty (easy|medium|hard), default Easy. The
 				// skirmish setup UI isn't wired on web yet, so this launcher flag is how the
@@ -944,6 +936,42 @@ void GameEngine::init()
 				const GameDifficulty gameDiff =
 					(aiDiff >= 2) ? DIFFICULTY_HARD : (aiDiff == 1) ? DIFFICULTY_NORMAL : DIFFICULTY_EASY;
 				MAIN_THREAD_EM_ASM({ console.log('[SKIRMISH] AI difficulty=' + $0 + ' (0=easy,1=med,2=hard)'); }, aiDiff);
+
+				// Task 4.3 (-bridge only): give the match a REAL fighting opponent. Slot 0
+				// is normally the human, who never fights headless, so the bridge AI would
+				// have no adversary. Under -bridge, slot 0 is a SEPARATE skirmish AI
+				// instead: m_forceSkirmishAI (set above) turns it into an AISkirmishPlayer
+				// that builds AND attacks autonomously. Slot 0 (USA) is then the autonomous
+				// opponent and slot 1 (China) the bridge-steered "knob-having" AI; team -1
+				// on both = free-for-all, so the two AIs fight each other and any real
+				// human is an observer. Opponent = Brutal under -stress, else the
+				// -aidifficulty level if given, else Medium (a fighting difficulty; the
+				// bridge AI's strategy comes from the external LLM, not its AI level).
+				// Without -bridge slot 0 stays the human: this -file path is how a normal
+				// web skirmish starts, so it must never lose its player.
+				if (TheGlobalData->m_wasmBridgeSkirmish)
+				{
+					const SlotState oppState = stress ? SLOT_BRUTAL_AI
+						: (TheGlobalData->m_wasmAIDifficulty < 0 ? SLOT_MED_AI : aiState);
+					GameSlot oppSlot;
+					oppSlot.setState(oppState);
+					oppSlot.setColor(0);
+					oppSlot.setPlayerTemplate(usaTmpl);
+					oppSlot.setStartPos(0);         // explicit valid pos avoids the random-assign while-loops
+					oppSlot.setTeamNumber(-1);      // -1 => no team (free-for-all: they fight)
+					TheSkirmishGameInfo->setSlot(0, oppSlot);
+				}
+				else
+				{
+					GameSlot humanSlot;
+					humanSlot.setState(SLOT_PLAYER, UnicodeString(L"Player"));
+					humanSlot.setColor(0);
+					humanSlot.setPlayerTemplate(usaTmpl);
+					humanSlot.setStartPos(0);       // explicit valid pos avoids the random-assign while-loops
+					humanSlot.setTeamNumber(-1);    // -1 => no team (free-for-all: they fight)
+					TheSkirmishGameInfo->setSlot(0, humanSlot);
+				}
+
 				GameSlot aiSlot;
 				aiSlot.setState(aiState);
 				aiSlot.setColor(1);
@@ -951,6 +979,18 @@ void GameEngine::init()
 				aiSlot.setStartPos(1);
 				aiSlot.setTeamNumber(-1);
 				TheSkirmishGameInfo->setSlot(1, aiSlot);
+
+				// Task 4.3/4.2: two skirmish AIs now own build lists, so the
+				// ControlBridge binding must be DETERMINISTIC about which one it
+				// steers. Record the bridge faction's side (slot 1 = China); tick()
+				// binds only to the build-list owner whose getSide() matches, and so
+				// never binds to the opponent (slot 0 = USA). A resulting player's
+				// getSide() equals its template side, so this comparison is exact.
+				{
+					const PlayerTemplate *bridgeTmpl = ThePlayerTemplateStore->getNthPlayerTemplate(chinaTmpl);
+					if (bridgeTmpl)
+						TheWritableGlobalData->m_wasmBridgeSide = bridgeTmpl->getSide();
+				}
 
 				TheSkirmishGameInfo->setMap(TheGlobalData->m_initialFile);
 				const MapMetaData *md = TheMapCache ? TheMapCache->findMap(TheGlobalData->m_initialFile) : NULL;
