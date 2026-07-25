@@ -61,6 +61,19 @@ add_link_options(-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
 # file_packager bundle loaded at runtime, so the engine must include FS support.
 add_link_options(-sFORCE_FILESYSTEM=1)
 
+# IDBFS: player-owned data (Save/, Replays/, options.ini, user maps) lives under /gxuser,
+# which web/user-data.js mounts as IndexedDB-backed storage so it survives a tab reload.
+# Without -lidbfs.js the IDBFS symbol does not exist and everything stays in RAM (MEMFS).
+# See GlobalData::BuildUserDataPathFromRegistry's __EMSCRIPTEN__ branch.
+add_link_options(-lidbfs.js)
+
+# Export FS to JS. Emscripten strips unreferenced runtime objects, so without this
+# `Module.FS` is a stub that aborts with "'FS' was not exported" the moment page-side code
+# touches it - which broke BOTH web/user-data.js (the IDBFS mount) and web/byo-assets.js
+# (the bring-your-own-assets import, whose whole job is FS.writeFile). Caught by
+# web-runtime/user-data-test.mjs; the BYO path had the same latent failure.
+add_link_options(-sEXPORTED_RUNTIME_METHODS=FS)
+
 # Embed a TrueType font at fonts/arial.ttf in MEMFS. The web has no fontconfig, so
 # FontCharsClass::Locate_Font_FontConfig (render2dsentence.cpp) resolves fonts from
 # this bundled path (arial.ttf = universal fallback; the UI is Arial-based). Without

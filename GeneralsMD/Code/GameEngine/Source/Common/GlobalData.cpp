@@ -1400,7 +1400,18 @@ AsciiString GlobalData::BuildUserDataPathFromRegistry()
 {
 	AsciiString userDataDir;
 
-#ifdef _WIN32
+#if defined(__EMSCRIPTEN__)
+	// GeneralsX @build dx8wasm - everything player-owned (Save/, Replays/, ArchivedReplays/,
+	// options.ini, user maps) is built from this path. The Linux branch below would resolve it
+	// to $HOME/.local/share/... which on wasm is MEMFS - RAM - so every save, replay and
+	// settings change was silently lost on tab reload.
+	//
+	// /gxuser is an IDBFS (IndexedDB-backed) mount set up by web/user-data.js before the engine
+	// starts, so those writes survive a reload. The path is fixed rather than derived because
+	// the JS side must name the same mount point; keep the two in sync.
+	userDataDir = "/gxuser/";
+
+#elif defined(_WIN32)
 	// GeneralsX @refactor Bender 01/04/2026 Windows-specific path handling (Registry-based)
 	// Integrates upstream bug-fix for OneDrive/Group Policy folder redirection
 #if defined(_MSC_VER) && (_MSC_VER < 1300)

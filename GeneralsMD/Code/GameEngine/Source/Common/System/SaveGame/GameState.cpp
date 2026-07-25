@@ -33,6 +33,9 @@
 #include <filesystem>     // std::filesystem for Linux directory operations
 #include "socket_compat.h" // CreateDirectory stub for Linux
 #endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>   // dx8wasm: flush the IDBFS user-data mount after a save
+#endif
 #include "Common/file.h"
 #include "Common/FileSystem.h"
 #include "Common/GameEngine.h"
@@ -629,6 +632,13 @@ SaveCode GameState::saveGame( AsciiString filename, UnicodeString desc,
 
 	// close the file
 	xferSave.close();
+
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - the save lives under /gxuser, an IDBFS mount that only reaches
+	// IndexedDB when syncfs runs. Push it now that the file is closed, so the save survives a
+	// tab reload even if the player closes the tab immediately after saving.
+	MAIN_THREAD_EM_ASM({ if (typeof gxFlushUserData === 'function') gxFlushUserData(); });
+#endif
 
 	// print message to the user for game successfully saved
 	UnicodeString msg = TheGameText->fetch( "GUI:GameSaveComplete" );

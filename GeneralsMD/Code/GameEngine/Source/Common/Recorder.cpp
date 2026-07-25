@@ -23,6 +23,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>  // dx8wasm: flush the IDBFS user-data mount when a replay is closed
+#endif
 
 #include "Common/Recorder.h"
 #include "Common/file.h"
@@ -700,6 +703,14 @@ void RecorderClass::stopRecording() {
 
 		if (m_archiveReplays)
 			archiveReplay(m_fileName);
+
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - the replay lives under /gxuser, an IDBFS mount that only
+		// reaches IndexedDB when syncfs runs. Push it now that the file is closed, so a player
+		// who reloads right after the match still finds the replay. web/user-data.js also
+		// flushes periodically; this just removes the window.
+		MAIN_THREAD_EM_ASM({ if (typeof gxFlushUserData === 'function') gxFlushUserData(); });
+#endif
 	}
 	m_fileName.clear();
 }
