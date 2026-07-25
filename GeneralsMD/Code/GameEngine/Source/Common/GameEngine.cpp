@@ -1137,6 +1137,33 @@ static double g_wasmStressLogicMs = 0.0;   // last GameLogic::UPDATE() cost (ms)
  */
 void GameEngine::update()
 {
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - a -file launch whose map does not resolve renders a silent
+	// black screen: the game starts, the HUD draws and the clock runs, but the world is empty.
+	// That cost a long debugging session (the map path was doubled; see
+	// ConvertShortMapPathToLongMapPath). Say so once instead, so the next wrong path is
+	// obvious from the console rather than looking like a rendering bug.
+	if (!TheGlobalData->m_initialFile.isEmpty())
+	{
+		static Int s_mapCheckFrames = 0;
+		if (++s_mapCheckFrames == 600)   // ~10s in: well past map load, cheap one-shot
+		{
+			Int objs = 0;
+			if (TheGameLogic)
+				for (Object *o = TheGameLogic->getFirstObject(); o; o = o->getNextObject()) ++objs;
+			if (objs == 0)
+			{
+				MAIN_THREAD_EM_ASM({
+					console.error('[MAP] no objects in the world - map "' + UTF8ToString($0) +
+						'" did not load (exists=' + $1 + '). Pass the SHORT map path, e.g. ' +
+						'maps\\\\USA01.map, not maps\\\\USA01\\\\USA01.map.');
+				},
+					TheGlobalData->m_mapName.str(),
+					(Int)(TheFileSystem ? TheFileSystem->doesFileExist(TheGlobalData->m_mapName.str()) : 0));
+			}
+		}
+	}
+#endif
 	USE_PERF_TIMER(GameEngine_update)
 	{
 		{

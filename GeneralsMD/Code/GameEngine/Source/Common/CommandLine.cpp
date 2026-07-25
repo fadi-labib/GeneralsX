@@ -104,8 +104,21 @@ static void ConvertShortMapPathToLongMapPath(AsciiString &mapName)
 	// remove the .map from the end.
 	token.truncateBy(4);
 
-	actualpath.concat(token);
-	actualpath.concat('\\');
+	// GeneralsX @bugfix dx8wasm - this expansion was not idempotent. Maps live on disk at
+	// <dir>\<Name>\<Name>.map and this builds that from the SHORT form <dir>\<Name>.map.
+	// Handed a path that was already in the long form, it appended the convention a second
+	// time (maps\USA01\USA01.map -> maps\USA01\USA01\USA01.map). DEBUG_CRASH compiles out of
+	// a release build, so the only symptom was a silent black screen: no terrain, no objects,
+	// no error -- indistinguishable from "campaign is broken on wasm", which is how it was
+	// filed. If the directory we just accumulated already ends in the map's own name, the
+	// caller gave us the long form; keep it.
+	AsciiString dupSuffix = token;
+	dupSuffix.concat('\\');
+	if (!actualpath.endsWithNoCase(dupSuffix.str()))
+	{
+		actualpath.concat(token);
+		actualpath.concat('\\');
+	}
 	actualpath.concat(token);
 	actualpath.concat(".map");
 
