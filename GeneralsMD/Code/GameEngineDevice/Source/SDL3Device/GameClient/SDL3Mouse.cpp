@@ -177,6 +177,65 @@ SDL3Mouse::~SDL3Mouse(void)
  * Load cursor from ANI file (fighter19 pattern with RIFF parsing)
  * GeneralsX @bugfix BenderAI 22/02/2026 Port fighter19 cursor loading
  */
+#ifdef __EMSCRIPTEN__
+// GeneralsX @build dx8wasm - minimal .ico/.cur frame decoder for wasm (replaces the
+// SDL3_image dependency, which isn't in the Emscripten build). The Generals cursors are
+// classic Windows cursors: a BITMAPINFOHEADER DIB (typically 4-bit palettized, 32x32) whose
+// height is 2x the real height (the top half is the XOR colour bitmap, the bottom half a
+// 1-bit AND transparency mask), both stored bottom-up. Handles 1/4/8-bit palettized and
+// 24/32-bit direct; returns an RGBA32 SDL_Surface, or NULL if the frame isn't a plain DIB.
+static SDL_Surface* gx_decode_cur_frame(const void* data, int size)
+{
+	const Uint8* p = (const Uint8*)data;
+	if (!p || size < 6 + 16 + 40) return NULL;
+	const Uint16 count = (Uint16)(p[4] | (p[5] << 8));
+	if (count < 1) return NULL;
+	const Uint8* e = p + 6;                                    // first ICONDIRENTRY
+	const Uint32 imgOff = (Uint32)(e[12] | (e[13] << 8) | (e[14] << 16) | (e[15] << 24));
+	if ((int)imgOff + 40 > size) return NULL;
+	const Uint8* dib = p + imgOff;
+	if (dib[0] == 0x89 && dib[1] == 'P') return NULL;          // PNG frame — unsupported here
+	const int   W    = (int)(dib[4] | (dib[5] << 8) | (dib[6] << 16) | (dib[7] << 24));
+	const int   H2   = (int)(dib[8] | (dib[9] << 8) | (dib[10] << 16) | (dib[11] << 24));
+	const int   bpp  = (int)(dib[14] | (dib[15] << 8));
+	const Uint32 comp = (Uint32)(dib[16] | (dib[17] << 8) | (dib[18] << 16) | (dib[19] << 24));
+	const int   H    = H2 / 2;
+	if (W <= 0 || H <= 0 || W > 256 || H > 256 || comp != 0) return NULL;
+	const int   nColors = (bpp <= 8) ? (1 << bpp) : 0;
+	const Uint8* pal   = dib + 40;
+	const Uint8* xorB  = pal + nColors * 4;
+	const int   xorRow = ((W * bpp + 31) / 32) * 4;            // rows padded to 4 bytes
+	const int   andRow = ((W + 31) / 32) * 4;
+	const Uint8* andB  = xorB + (size_t)xorRow * H;
+	if (andB + (size_t)andRow * H > p + size) return NULL;     // bounds
+	SDL_Surface* surf = SDL_CreateSurface(W, H, SDL_PIXELFORMAT_RGBA32);
+	if (!surf) return NULL;
+	Uint8* out = (Uint8*)surf->pixels;
+	for (int y = 0; y < H; ++y)
+	{
+		const int srcY = H - 1 - y;                             // DIB is bottom-up
+		const Uint8* xr = xorB + (size_t)srcY * xorRow;
+		const Uint8* ar = andB + (size_t)srcY * andRow;
+		Uint8* o = out + (size_t)y * surf->pitch;
+		for (int x = 0; x < W; ++x)
+		{
+			const int andBit = (ar[x >> 3] >> (7 - (x & 7))) & 1;   // 1 => transparent
+			Uint8 r = 0, g = 0, b = 0, a = 255;
+			if (bpp == 32) { const Uint8* px = xr + x * 4; b = px[0]; g = px[1]; r = px[2]; a = px[3];
+			                 if (a == 0 && !andBit) a = 255; }
+			else if (bpp == 24) { const Uint8* px = xr + x * 3; b = px[0]; g = px[1]; r = px[2]; }
+			else { int idx = (bpp == 8) ? xr[x]
+			              : (bpp == 4) ? ((x & 1) ? (xr[x >> 1] & 0xF) : (xr[x >> 1] >> 4))
+			              : ((xr[x >> 3] >> (7 - (x & 7))) & 1);
+			       const Uint8* c = pal + idx * 4; b = c[0]; g = c[1]; r = c[2]; }
+			if (andBit && bpp != 32) a = 0;
+			o[x * 4 + 0] = r; o[x * 4 + 1] = g; o[x * 4 + 2] = b; o[x * 4 + 3] = a;
+		}
+	}
+	return surf;
+}
+#endif
+
 AnimatedCursor* SDL3Mouse::loadCursorFromFile(const char* filepath)
 {
 	File* file = TheFileSystem->openFile(filepath, File::READ | File::BINARY);
@@ -250,10 +309,10 @@ AnimatedCursor* SDL3Mouse::loadCursorFromFile(const char* filepath)
 					const void *frame_buffer = getChunkData(frame);
 					SDL_IOStream *io_stream = SDL_IOFromConstMem(frame_buffer, frame->size);
 #ifdef __EMSCRIPTEN__
-					// GeneralsX @build dx8wasm - no SDL3_image on wasm; .ico cursor
-					// decoding is a runtime asset concern (later plan).
+					// GeneralsX @build dx8wasm - decode the .ico/.cur frame ourselves; there's
+					// no SDL3_image on wasm. The frame data begins at the embedded .ico ICONDIR.
 					(void)io_stream;
-					SDL_Surface *surface = cursor->m_frameSurfaces[frame_index] = NULL;
+					SDL_Surface *surface = cursor->m_frameSurfaces[frame_index] = gx_decode_cur_frame(frame_buffer, frame->size);
 #else
 					SDL_Surface *surface = cursor->m_frameSurfaces[frame_index] = IMG_LoadTyped_IO(io_stream, true, "ico");
 #endif
@@ -438,6 +497,86 @@ void SDL3Mouse::update(void)
  * Initialize cursor resources (load cursor images from ANI files)
  * GeneralsX @bugfix BenderAI 22/02/2026 Port fighter19 cursor loading
  */
+#ifdef __EMSCRIPTEN__
+// GeneralsX @build dx8wasm - this install ships no Data/Cursors/*.ani art (none in the .big
+// archives, none loose), and there's no SDL3_image on wasm to decode .ico frames anyway — so
+// the game's cursors never loaded and the pointer was stuck on the browser default arrow,
+// unchanging in every context. Map each game cursor TYPE to the closest built-in SDL/browser
+// system cursor (rendered as a CSS cursor) so the pointer at least switches contextually:
+// crosshair over targets, move over terrain, hand to select/enter, no-entry when invalid.
+static SDL_Cursor* gx_system_cursor_for(Int cursor)
+{
+	SDL_SystemCursor id;
+	switch (cursor)
+	{
+		// targeting / attack / fire / place-explosive / superweapon -> crosshair
+		case Mouse::CROSS:
+		case Mouse::ATTACK_OBJECT:
+		case Mouse::FORCE_ATTACK_OBJECT:
+		case Mouse::FORCE_ATTACK_GROUND:
+		case Mouse::ATTACKMOVETO:
+		case Mouse::SNIPE_VEHICLE:
+		case Mouse::LASER_GUIDED_MISSILES:
+		case Mouse::TANKHUNTER_TNT_ATTACK:
+		case Mouse::STAB_ATTACK:
+		case Mouse::BUILD_PLACEMENT:
+		case Mouse::PLACE_REMOTE_CHARGE:
+		case Mouse::PLACE_TIMED_CHARGE:
+		case Mouse::FIRE_FLAME:
+		case Mouse::FIRE_BOMB:
+		case Mouse::PARTICLE_UPLINK_CANNON:
+#ifdef ALLOW_SURRENDER
+		case Mouse::FIRE_TRANQ_DARTS:
+		case Mouse::FIRE_STUN_BULLETS:
+#endif
+			id = SDL_SYSTEM_CURSOR_CROSSHAIR; break;
+
+		// move / rally / dock / waypoint / edge-scroll -> move
+		case Mouse::MOVETO:
+		case Mouse::SET_RALLY_POINT:
+		case Mouse::SCROLL:
+		case Mouse::DOCK:
+		case Mouse::WAYPOINT:
+			id = SDL_SYSTEM_CURSOR_MOVE; break;
+
+		// select / enter / repair / capture / hack / beacon / special action -> hand
+		case Mouse::SELECTING:
+		case Mouse::ENTER_FRIENDLY:
+		case Mouse::ENTER_AGGRESSIVELY:
+		case Mouse::GET_REPAIRED:
+		case Mouse::GET_HEALED:
+		case Mouse::DO_REPAIR:
+		case Mouse::RESUME_CONSTRUCTION:
+		case Mouse::CAPTUREBUILDING:
+		case Mouse::DEFECTOR:
+		case Mouse::HACK:
+		case Mouse::DISGUISE_AS_VEHICLE:
+		case Mouse::PLACE_BEACON:
+#ifdef ALLOW_DEMORALIZE
+		case Mouse::DEMORALIZE:
+#endif
+#ifdef ALLOW_SURRENDER
+		case Mouse::PICK_UP_PRISONER:
+		case Mouse::RETURN_TO_PRISON:
+#endif
+			id = SDL_SYSTEM_CURSOR_POINTER; break;
+
+		// invalid / out-of-range -> no-entry
+		case Mouse::INVALID_BUILD_PLACEMENT:
+		case Mouse::GENERIC_INVALID:
+		case Mouse::STAB_ATTACK_INVALID:
+		case Mouse::PLACE_CHARGE_INVALID:
+		case Mouse::OUTRANGE:
+			id = SDL_SYSTEM_CURSOR_NOT_ALLOWED; break;
+
+		// NORMAL, ARROW, and anything unlisted -> default arrow
+		default:
+			id = SDL_SYSTEM_CURSOR_DEFAULT; break;
+	}
+	return SDL_CreateSystemCursor(id);
+}
+#endif
+
 void SDL3Mouse::initCursorResources(void)
 {
 	for (Int cursor=FIRST_CURSOR; cursor<NUM_MOUSE_CURSORS; cursor++)
@@ -453,7 +592,18 @@ void SDL3Mouse::initCursorResources(void)
 					sprintf(resourcePath,"Data/Cursors/%s.ani",m_cursorInfo[cursor].textureName.str());
 
 				cursorResources[cursor][direction]=loadCursorFromFile(resourcePath);
+#ifdef __EMSCRIPTEN__
+				// Real .ani art decoded? else fall back to a built-in system cursor for this
+				// type so the pointer still switches contextually.
+				if (!cursorResources[cursor][direction])
+				{
+					AnimatedCursor* ac = new AnimatedCursor();
+					ac->m_cursor = gx_system_cursor_for(cursor);
+					cursorResources[cursor][direction] = ac;
+				}
+#else
 				DEBUG_ASSERTCRASH(cursorResources[cursor][direction], ("MissingCursor %s\n",resourcePath));
+#endif
 			}
 		}
 	}
