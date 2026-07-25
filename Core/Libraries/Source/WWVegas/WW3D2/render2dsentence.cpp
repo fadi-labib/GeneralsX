@@ -367,8 +367,17 @@ Render2DSentenceClass::Build_Textures ()
 
 		new_texture->Get_Filter().Set_U_Addr_Mode(TextureFilterClass::TEXTURE_ADDRESS_CLAMP);
 		new_texture->Get_Filter().Set_V_Addr_Mode(TextureFilterClass::TEXTURE_ADDRESS_CLAMP);
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - the glyph atlas is A4R4G4B4 (4-bit alpha = only 16 coverage
+		// levels; FreeType's 8-bit AA is packed as pixel>>4). Point-sampling those 16 levels makes
+		// hard, jagged, colour-fringed edges on the web GPU. Bilinear (FILTER_TYPE_FAST -> GL_LINEAR)
+		// interpolates between the coverage levels, smoothing the edges. Desktop keeps point sampling.
+		new_texture->Get_Filter().Set_Min_Filter(TextureFilterClass::FILTER_TYPE_FAST);
+		new_texture->Get_Filter().Set_Mag_Filter(TextureFilterClass::FILTER_TYPE_FAST);
+#else
 		new_texture->Get_Filter().Set_Min_Filter(TextureFilterClass::FILTER_TYPE_NONE);
 		new_texture->Get_Filter().Set_Mag_Filter(TextureFilterClass::FILTER_TYPE_NONE);
+#endif
 		new_texture->Get_Filter().Set_Mip_Mapping(TextureFilterClass::FILTER_TYPE_NONE);
 
 		//
