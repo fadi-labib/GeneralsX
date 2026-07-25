@@ -848,6 +848,32 @@ void GameEngine::init()
 				// so the in-game world is never drawn. Go straight to gameplay.
 				TheWritableGlobalData->m_playSizzle = FALSE;
 				TheWritableGlobalData->m_afterIntro = FALSE;
+
+				// GeneralsX @build dx8wasm - `-campaign` runs the map as a SINGLE-PLAYER
+				// mission (its own scripts, objectives and scripted opponents) rather than
+				// the synthetic skirmish below. This is the same start the desktop build uses
+				// for -file, and it exists because campaign is otherwise unreachable for
+				// testing: it sits behind shell menu buttons, and synthetic clicks register
+				// hover without activating SDL buttons.
+				//   -file Maps/USA01/USA01.map -campaign
+				// -aidifficulty still applies, mapping to the mission difficulty.
+				if (TheGlobalData->m_wasmCampaign)
+				{
+					const Int cDiff = TheGlobalData->m_wasmAIDifficulty < 0 ? 1 : TheGlobalData->m_wasmAIDifficulty;
+					const GameDifficulty campDiff =
+						(cDiff >= 2) ? DIFFICULTY_HARD : (cDiff == 1) ? DIFFICULTY_NORMAL : DIFFICULTY_EASY;
+					MAIN_THREAD_EM_ASM({ console.log('[CAMPAIGN] single-player mission, difficulty=' + $0); }, cDiff);
+
+					TheWritableGlobalData->m_pendingFile = TheGlobalData->m_initialFile;
+					TheWritableGlobalData->m_mapName = TheGlobalData->m_initialFile;
+					GameMessage *cmsg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
+					cmsg->appendIntegerArgument(GAME_SINGLE_PLAYER);
+					cmsg->appendIntegerArgument(campDiff);
+					cmsg->appendIntegerArgument(0);
+					InitRandom(0);
+				}
+				else
+				{
 				// GeneralsX @build dx8wasm - a bare -file launch loads the map with no
 				// armies (GAME_SINGLE_PLAYER + null TheGameInfo). Build a minimal
 				// 2-player skirmish (human USA vs Easy-AI China) so units actually
@@ -924,6 +950,7 @@ void GameEngine::init()
 				msg->appendIntegerArgument(gameDiff);
 				msg->appendIntegerArgument(0);
 				msg->appendIntegerArgument(60);   // FPS limit
+				}   // end of the non-campaign (synthetic skirmish) branch
 #else
 				TheWritableGlobalData->m_pendingFile = TheGlobalData->m_initialFile;
 

@@ -715,6 +715,17 @@ Int parseStress(char *args[], int)
 // (easy|medium|hard). The skirmish setup UI isn't wired on web yet, so this is how a
 // difficulty is chosen; the -file path (GameEngine.cpp) maps it to the AI slot state
 // and the game difficulty. No-op without -file.
+// GeneralsX @build dx8wasm - `-campaign` makes `-file <map>` start a SINGLE-PLAYER mission
+// (map scripts, objectives, scripted opponents) instead of the synthetic 2-player skirmish
+// the bare -file path builds. Campaign is otherwise unreachable headlessly: it lives behind
+// shell menu buttons, and synthetic clicks register hover but do not activate SDL buttons.
+// No-op without -file.
+Int parseCampaign(char *args[], int num)
+{
+	TheWritableGlobalData->m_wasmCampaign = TRUE;
+	return 1;
+}
+
 Int parseAIDifficulty(char *args[], int num)
 {
 	if (num > 1)
@@ -1348,6 +1359,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-map", parseMapName },
 	{ "-stress", parseStress },
 	{ "-aidifficulty", parseAIDifficulty },
+	{ "-campaign", parseCampaign },
 #endif
 
 #ifdef DEBUG_LOGGING

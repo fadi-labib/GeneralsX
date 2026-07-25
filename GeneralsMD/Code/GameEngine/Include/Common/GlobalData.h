@@ -358,6 +358,7 @@ public:
 	AsciiString m_initialFile;				///< If this is specified, load a specific map from the command-line
 	AsciiString m_pendingFile;				///< If this is specified, use this map at the next game start
 	Bool m_wasmStressSkirmish;				///< -stress: wasm -file skirmish uses Brutal AI + huge cash (headless perf repro)
+	Bool m_wasmCampaign;					///< -campaign: launch the -file map as a single-player mission (scripts/objectives) instead of a synthetic skirmish
 	Int m_wasmAIDifficulty;					///< -aidifficulty easy|medium|hard: wasm -file skirmish AI level (0=easy,1=med,2=hard/brutal; -1=default easy)
 
 	std::vector<AsciiString> m_simulateReplays; ///< If not empty, simulate this list of replays and exit.
