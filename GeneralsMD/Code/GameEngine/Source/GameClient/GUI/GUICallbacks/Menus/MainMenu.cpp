@@ -588,6 +588,19 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 
 	initialHide();
 
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - hide the two main-menu routes that cannot work in a browser
+	// tab, so players stop hitting dead ends:
+	//   Online       -> StartPatchCheck() / GameSpy-WOL, whose servers were shut down in 2014.
+	//   WorldBuilder -> _spawnl("WorldBuilder.exe"), and there is no OS process to spawn.
+	// LAN ("Network") stays visible: it is the working multiplayer path, carried over WebRTC.
+	// Hidden rather than merely disabled - a greyed button still reads as "coming soon".
+	if (buttonOnline != nullptr)
+		buttonOnline->winHide(TRUE);
+	if (buttonWorldBuilder != nullptr)
+		buttonWorldBuilder->winHide(TRUE);
+#endif
+
 	showSelectiveButtons(SHOW_NONE);
 	// Set up the version number
 #if defined(RTS_DEBUG) || defined RTS_PROFILE_LEGACY
@@ -1541,6 +1554,12 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if( controlID == onlineID )
 			{
+#ifdef __EMSCRIPTEN__
+				// GeneralsX @build dx8wasm - the button is hidden at init; swallow the click
+				// anyway. This route ends in StartPatchCheck()/GameSpy-WOL, whose services no
+				// longer exist. LAN-over-WebRTC ("Network") is the supported path.
+				break;
+#endif
 				if(dontAllowTransitions)
 					break;
 				dontAllowTransitions = TRUE;
@@ -1582,7 +1601,12 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 			}
 			else if( controlID == worldBuilderID )
 			{
-#if defined RTS_DEBUG
+#ifdef __EMSCRIPTEN__
+				// GeneralsX @build dx8wasm - the button is hidden at init; swallow the click
+				// anyway (keyboard focus / script hooks can still reach it). There is no OS
+				// process to spawn WorldBuilder.exe into.
+				break;
+#elif defined RTS_DEBUG
 				if(_spawnl(_P_NOWAIT,"WorldBuilderD.exe","WorldBuilderD.exe", nullptr) < 0)
 					MessageBoxOk(TheGameText->fetch("GUI:WorldBuilder"), TheGameText->fetch("GUI:WorldBuilderLoadFailed"),nullptr);
 #else
