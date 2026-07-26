@@ -739,6 +739,32 @@ Int parseCampaign(char *args[], int num)
 	return 1;
 }
 
+// GeneralsX @build dx8wasm - `-skirmishonly` builds the lean, focused variant: skirmish is the
+// whole game. It hides every route that is either impossible on the web or unverified, so a
+// player cannot walk into a dead end:
+//
+//   hidden : campaign (Solo Play faction picks), Generals Challenge, Load Game, Replays
+//   forced : cinematics off (the .bik reel is not bundled anyway, so those routes just stall)
+//   kept   : Skirmish, Multiplayer (LAN over WebRTC -- the same skirmish, with people),
+//            Options, Credits, Exit
+//
+// LAN is deliberately kept: in this game multiplayer IS skirmish -- same maps, same game-options
+// menu, just human opponents. Campaign is the genuinely different mode, and it is the one with
+// unverified mission-to-mission progression. Drop LAN too by hiding buttonMultiPlayer alongside
+// the others in MainMenuInit.
+Int parseSkirmishOnly(char *args[], int num)
+{
+	TheWritableGlobalData->m_wasmSkirmishOnly = TRUE;
+	// No cinematics, ever. The .bik reel is opt-in at packaging time (~282 MB) and is not
+	// bundled by default, so on a normal boot GameClient::update would sit in the movie branch
+	// waiting for a logo that will never load. Turning both off here means the menu comes up
+	// immediately instead of after a stall.
+	TheWritableGlobalData->m_playIntro = FALSE;
+	TheWritableGlobalData->m_playSizzle = FALSE;
+	TheWritableGlobalData->m_afterIntro = TRUE;
+	return 1;
+}
+
 Int parseAIDifficulty(char *args[], int num)
 {
 	if (num > 1)
@@ -1373,6 +1399,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-stress", parseStress },
 	{ "-aidifficulty", parseAIDifficulty },
 	{ "-campaign", parseCampaign },
+	{ "-skirmishonly", parseSkirmishOnly },
 #endif
 
 #ifdef DEBUG_LOGGING

@@ -359,6 +359,7 @@ public:
 	AsciiString m_pendingFile;				///< If this is specified, use this map at the next game start
 	Bool m_wasmStressSkirmish;				///< -stress: wasm -file skirmish uses Brutal AI + huge cash (headless perf repro)
 	Bool m_wasmCampaign;					///< -campaign: launch the -file map as a single-player mission (scripts/objectives) instead of a synthetic skirmish
+	Bool m_wasmSkirmishOnly;				///< -skirmishonly: skirmish-only build. Hides campaign/Challenge/Load/Replay and forces cinematics off; Skirmish, LAN and Options stay.
 	Int m_wasmAIDifficulty;					///< -aidifficulty easy|medium|hard: wasm -file skirmish AI level (0=easy,1=med,2=hard/brutal; -1=default easy)
 
 	std::vector<AsciiString> m_simulateReplays; ///< If not empty, simulate this list of replays and exit.

@@ -599,6 +599,24 @@ void MainMenuInit( WindowLayout *layout, void *userData )
 		buttonOnline->winHide(TRUE);
 	if (buttonWorldBuilder != nullptr)
 		buttonWorldBuilder->winHide(TRUE);
+
+	// GeneralsX @build dx8wasm - `-skirmishonly`: skirmish is the whole game. Hide every route
+	// that is impossible on the web or unverified, so there are no dead ends to walk into.
+	// Kept: Skirmish, Multiplayer (LAN = the same skirmish with people), Options, Credits, Exit.
+	if (TheGlobalData->m_wasmSkirmishOnly)
+	{
+		// Top-level "Load" opens the Load-Game/Replays submenu. Both of those menus have never
+		// been driven on wasm, so the whole branch goes rather than shipping a maybe.
+		if (buttonLoadReplay != nullptr) buttonLoadReplay->winHide(TRUE);
+		if (buttonLoad != nullptr)       buttonLoad->winHide(TRUE);
+		if (buttonReplay != nullptr)     buttonReplay->winHide(TRUE);
+		// Campaign: the three faction picks, their save/continue rows, and Generals Challenge.
+		if (buttonChallenge != nullptr)  buttonChallenge->winHide(TRUE);
+		if (buttonUSA != nullptr)        buttonUSA->winHide(TRUE);
+		if (buttonGLA != nullptr)        buttonGLA->winHide(TRUE);
+		if (buttonChina != nullptr)      buttonChina->winHide(TRUE);
+		showSelectiveButtons(SHOW_NONE);
+	}
 #endif
 
 	showSelectiveButtons(SHOW_NONE);
@@ -885,6 +903,53 @@ void MainMenuUpdate( WindowLayout *layout, void *userData )
 	}
 	if(DontShowMainMenu && justEntered)
 		justEntered = FALSE;
+
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - `-skirmishonly`: re-assert the hides every frame.
+	// Hiding once in MainMenuInit is not enough: the transition handler reveals each menu group
+	// as its animation plays and un-hides the buttons it owns, so a one-shot winHide is undone
+	// the moment the menu animates in (LOAD reappeared in a capture, which is how this was
+	// caught). These are a handful of pointer compares against an already-correct flag, so
+	// re-asserting per frame is cheaper than trying to hook every transition.
+	if (TheGlobalData->m_wasmSkirmishOnly)
+	{
+		if (buttonLoadReplay != nullptr) buttonLoadReplay->winHide(TRUE);
+		if (buttonLoad != nullptr)       buttonLoad->winHide(TRUE);
+		if (buttonReplay != nullptr)     buttonReplay->winHide(TRUE);
+		if (buttonChallenge != nullptr)  buttonChallenge->winHide(TRUE);
+		if (buttonUSA != nullptr)        buttonUSA->winHide(TRUE);
+		if (buttonGLA != nullptr)        buttonGLA->winHide(TRUE);
+		if (buttonChina != nullptr)      buttonChina->winHide(TRUE);
+		if (buttonOnline != nullptr)     buttonOnline->winHide(TRUE);
+		if (buttonWorldBuilder != nullptr) buttonWorldBuilder->winHide(TRUE);
+
+		// Close the hole the hidden Load button leaves in the middle of the main menu. The .wnd
+		// layout positions each entry absolutely, so hiding one leaves a gap rather than
+		// reflowing. Slide the three below it up by exactly one slot, measured from the live
+		// layout (Multiplayer -> Load spacing) instead of a hardcoded pixel value, so it stays
+		// correct at any resolution. Computed once: the buttons do not move afterwards.
+		static Bool s_menuCompacted = FALSE;
+		if (!s_menuCompacted && buttonLoadReplay != nullptr && buttonMultiPlayer != nullptr &&
+				buttonOptions != nullptr && buttonCredits != nullptr && buttonExit != nullptr)
+		{
+			Int mpX, mpY, ldX, ldY;
+			buttonMultiPlayer->winGetPosition(&mpX, &mpY);
+			buttonLoadReplay->winGetPosition(&ldX, &ldY);
+			const Int slot = ldY - mpY;
+			if (slot > 0)
+			{
+				GameWindow *shift[3] = { buttonOptions, buttonCredits, buttonExit };
+				for (Int i = 0; i < 3; ++i)
+				{
+					Int x, y;
+					shift[i]->winGetPosition(&x, &y);
+					shift[i]->winSetPosition(x, y - slot);
+				}
+				s_menuCompacted = TRUE;
+			}
+		}
+	}
+#endif
 
 	// GeneralsX @feature BenderAI 21/04/2026 Poll background update check; create dynamic button when update found
 #ifdef SAGE_UPDATE_CHECK
@@ -1420,6 +1485,18 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
 				launchChallengeMenu = FALSE;
 			}
 
+
+#ifdef __EMSCRIPTEN__
+			// GeneralsX @build dx8wasm - `-skirmishonly`: these are hidden at init, but a hidden
+			// window's handler is still reachable via keyboard focus or a script hook, so swallow
+			// the click rather than trusting winHide alone.
+			if (TheGlobalData->m_wasmSkirmishOnly &&
+					(controlID == buttonLoadReplayID || controlID == buttonLoadID ||
+					 controlID == buttonReplayID     || controlID == buttonChallengeID ||
+					 controlID == buttonUSAID        || controlID == buttonGLAID ||
+					 controlID == buttonChinaID))
+				break;
+#endif
 
 			if( controlID == buttonSinglePlayerID )
 			{

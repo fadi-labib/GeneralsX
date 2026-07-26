@@ -1013,6 +1013,7 @@ GlobalData::GlobalData()
 	m_pendingFile.clear();
 	m_wasmStressSkirmish = FALSE;
 	m_wasmCampaign = FALSE;    // -campaign: run the -file map as a single-player mission
+	m_wasmSkirmishOnly = FALSE;  // -skirmishonly: skirmish-only build (see parseSkirmishOnly)
 	m_wasmAIDifficulty = -1;   // -aidifficulty override; -1 => default (Easy)
 
 	m_simulateReplays.clear();
