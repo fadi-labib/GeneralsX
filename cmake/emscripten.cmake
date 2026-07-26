@@ -35,8 +35,22 @@ add_compile_options(-pthread)
 # exposed as a *resizable* ArrayBuffer, and WebGL rejects typed-array views of it
 # ("must not be resizable") - which breaks glUniformMatrix4fv etc. A large fixed
 # heap keeps the SharedArrayBuffer non-resizable so WebGL accepts the views.
+#
+# GX_HEAP_MB overrides the size. It must stay a FIXED size whatever you choose — do not switch
+# to ALLOW_MEMORY_GROWTH to save memory, for the reason above.
+#
+# Why this blocks mobile: emscripten preloads the asset bundle into MEMFS, which is RAM, so the
+# heap has to be larger than the packed assets (~2 GB for the in-game set). No phone browser
+# will hand out 3.5 GB — iOS Safari caps far below it. Making mobile viable therefore is not a
+# matter of lowering this number; it needs the assets to stop being copied into RAM wholesale
+# (on-demand reads from OPFS), or a much smaller archive subset. This knob exists so that work
+# can be measured:
+#   emcmake cmake ... -DGX_HEAP_MB=1024
+set(GX_HEAP_MB "3584" CACHE STRING "Fixed wasm heap size in MB (must exceed the preloaded asset bundle)")
+math(EXPR GX_HEAP_BYTES "${GX_HEAP_MB} * 1024 * 1024")
+message(STATUS "GeneralsX: fixed wasm heap = ${GX_HEAP_MB} MB")
 add_link_options(-pthread -sPROXY_TO_PTHREAD=1
-  -sINITIAL_MEMORY=3758096384 -sALLOW_MEMORY_GROWTH=0)  # 3.5 GB fixed (holds the in-game asset bundle
+  -sINITIAL_MEMORY=${GX_HEAP_BYTES} -sALLOW_MEMORY_GROWTH=0)  # fixed (holds the in-game asset bundle
   # incl. full audio ~2GB + engine runtime; wasm32 caps at 4GB. Non-growable so WebGL accepts typed-
   # array views of the SharedArrayBuffer. Raised from 2GB when base-game audio was added (~640MB).
 
