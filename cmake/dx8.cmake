@@ -224,6 +224,7 @@ if(EMSCRIPTEN)
 "}\n"
 "#include <emscripten.h>\n"
 "#include <emscripten/html5_webgl.h>\n"
+"#include <dx8wasm/telemetry.h>\n"
 "namespace platform {\n"
 "bool create_gl_context(int, int) { return SDL_GL_GetCurrentContext() != nullptr; }\n"
 "// A browser can revoke the WebGL context at any time, and mobile browsers routinely do it\n"
@@ -248,6 +249,9 @@ if(EMSCRIPTEN)
 "    }\n"
 "  }\n"
 "  if (s_lost) return;\n"
+"  // Telemetry rides the frame boundary: present() is the one function that runs every\n"
+"  // frame on the thread owning the GL context. The pump self-rate-limits to 1 Hz.\n"
+"  dx8wasm_tel_pump();\n"
 "  SDL_Window* w = SDL_GL_GetCurrentWindow(); if (w) SDL_GL_SwapWindow(w);\n"
 "}\n"
 "void destroy_gl_context() {}\n"
@@ -267,10 +271,18 @@ if(EMSCRIPTEN)
     ${DX8WASM_DIR}/runtime/d3d8webgl/device.cpp
     ${DX8WASM_DIR}/runtime/graphics-ff/ff_shader.cpp
     ${DX8WASM_DIR}/runtime/coverage/coverage.cpp
+    ${DX8WASM_DIR}/runtime/telemetry/telemetry.cpp
     ${DX8WASM_DIR}/runtime/runtime.cpp
     ${_dx8_stub})
   target_include_directories(dx8wasm_backend PUBLIC
     ${DX8WASM_DIR}/runtime ${DX8WASM_DIR}/runtime/d3d8 ${DX8WASM_DIR}/runtime/include)
   target_compile_features(dx8wasm_backend PUBLIC cxx_std_17)  # dx8wasm requires C++17
+  # This target is defined before cmake/emscripten.cmake's add_compile_options(-pthread), so it
+  # never inherits the project-wide pthread/atomics feature flags. That went unnoticed until
+  # telemetry.cpp (std::atomic ring buffer): the final link uses --shared-memory for
+  # PROXY_TO_PTHREAD, and wasm-ld refuses any object that emits atomic instructions without
+  # having been compiled with the matching feature. Set it explicitly rather than relying on
+  # inclusion order.
+  target_compile_options(dx8wasm_backend PRIVATE -pthread)
   message(STATUS "dx8wasm backend enabled (WASM) - implementation for the DXVK d3d8.h ABI")
 endif()
