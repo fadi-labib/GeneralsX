@@ -30,6 +30,15 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>  // emscripten_set_main_loop for the browser render loop
 #include <exception>     // std::exception in the wasm frame's resilient catch
+#include <dx8wasm/telemetry.h>
+// GeneralsX @build dx8wasm — per-frame timing for the web build. Two spans a frame at
+// 60 FPS is 120 ring records/second against a 1024-record ring drained at 1 Hz: fits
+// with headroom, and dx8wasm_tel_dropped() reports it if it ever stops fitting.
+#define GX_TEL_SPAN_BEGIN() const double gx_t0 = emscripten_get_now()
+#define GX_TEL_SPAN_END(name) dx8wasm_tel_span(name, emscripten_get_now() - gx_t0)
+#else
+#define GX_TEL_SPAN_BEGIN() do {} while (0)
+#define GX_TEL_SPAN_END(name) do {} while (0)
 #endif
 
 #include "Common/ActionManager.h"
@@ -1175,7 +1184,8 @@ void GameEngine::update()
 			/// @todo Move audio init, update, etc, into GameClient update
 
 			TheAudio->UPDATE();
-			TheGameClient->UPDATE();
+			// GeneralsX @build dx8wasm - per-frame client timing span; see GX_TEL_SPAN_* above.
+			{ GX_TEL_SPAN_BEGIN(); TheGameClient->UPDATE(); GX_TEL_SPAN_END("frame.client"); }
 			TheMessageStream->propagateMessages();
 
 			if (TheNetwork != nullptr)
@@ -1192,11 +1202,11 @@ void GameEngine::update()
 			// CPU-logic growth stays visible even when software rendering dominates wall-clock.
 			if (TheGlobalData && TheGlobalData->m_wasmStressSkirmish) {
 				double lt0 = emscripten_get_now();
-				TheGameLogic->UPDATE();
+				{ GX_TEL_SPAN_BEGIN(); TheGameLogic->UPDATE(); GX_TEL_SPAN_END("frame.logic"); }
 				g_wasmStressLogicMs = emscripten_get_now() - lt0;
 			} else
 #endif
-			TheGameLogic->UPDATE();
+			{ GX_TEL_SPAN_BEGIN(); TheGameLogic->UPDATE(); GX_TEL_SPAN_END("frame.logic"); }
 
 			if (!TheFramePacer->isTimeFrozen())
 			{
