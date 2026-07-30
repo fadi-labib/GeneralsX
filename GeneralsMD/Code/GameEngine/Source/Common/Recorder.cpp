@@ -25,6 +25,7 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>  // dx8wasm: flush the IDBFS user-data mount when a replay is closed
+#include <dx8wasm/telemetry.h>
 #endif
 
 #include "Common/Recorder.h"
@@ -1139,6 +1140,17 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 			fprintf(stderr, "[GeneralsX] REPLAY_CRC_MISMATCH frame=%u inGame=0x%08X replay=0x%08X\n",
 				mismatchFrame, playbackCRC, newCRC);
 			fprintf(stderr, "[GeneralsX] This replay is incompatible with the current map/game-code state.\n");
+
+#ifdef __EMSCRIPTEN__
+			// GeneralsX @build dx8wasm — stderr from the engine's worker never reaches the
+			// page, so the wasm build had no way to report a desync. Telemetry does.
+			{
+				char detail[96];
+				snprintf(detail, sizeof detail, "frame=%u inGame=%08X replay=%08X",
+					mismatchFrame, playbackCRC, newCRC);
+				dx8wasm_tel_log("replay.crc_mismatch", detail);
+			}
+#endif
 
 			// TheSuperHackers @tweak Pause the game on mismatch.
 			// But not when a window with focus is opened, because that can make resuming difficult.
