@@ -1110,6 +1110,21 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 		UnsignedInt playbackCRC = m_crcInfo->readCRC();
 		//DEBUG_LOG(("RecorderClass::handleCRCMessage() - Comparing CRCs of InGame:%8.8X Replay:%8.8X Frame:%d from Player %d",
 		//	playbackCRC, newCRC, TheGameLogic->getFrame()-m_crcInfo->GetQueueSize()-1, playerIndex));
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - this line is the actual comparator running: every reach
+		// of it means a recorded CRC (dequeued above) was just checked against a live one,
+		// whether or not it matched. replay.crc_mismatch (below) only fires on the rare
+		// divergence, so on a clean run a wasm test harness sees no engine-side evidence a
+		// comparison ever happened -- it can only prove the replay file was placed (the
+		// injector's byte count), never that the engine opened it and actually ran the
+		// comparator. This counter closes that gap: its value is a direct count of
+		// comparisons performed, so a replay-determinism gate can assert it is > 0 (playback
+		// genuinely ran) and use its growth rate to sanity-check the real CRC cadence (see
+		// GameLogic.cpp's wasmSoloCrcInterval / the generateForMP x6 factor) instead of
+		// assuming one from a frame-count threshold alone.
+		if (TheGameLogic->getFrame() > 0)
+			dx8wasm_tel_counter("replay.crc_compared", 1);
+#endif
 		if (TheGameLogic->getFrame() > 0 && newCRC != playbackCRC && !m_crcInfo->sawCRCMismatch())
 		{
 			//Kris: Patch 1.01 November 10, 2003 (integrated changes from Matt Campbell)
