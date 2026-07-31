@@ -248,10 +248,13 @@ if(EMSCRIPTEN)
 "      });\n"
 "    }\n"
 "  }\n"
-"  if (s_lost) return;\n"
 "  // Telemetry rides the frame boundary: present() is the one function that runs every\n"
 "  // frame on the thread owning the GL context. The pump self-rate-limits to 1 Hz.\n"
+"  // It must drain BEFORE the context-loss bail-out below: it touches no GPU state, and\n"
+"  // leaving it after the return kills telemetry at exactly the incident whose records matter\n"
+"  // most (gxContextLost), losing whatever is still queued in the ring at the moment of loss.\n"
 "  dx8wasm_tel_pump();\n"
+"  if (s_lost) return;\n"
 "  SDL_Window* w = SDL_GL_GetCurrentWindow(); if (w) SDL_GL_SwapWindow(w);\n"
 "}\n"
 "void destroy_gl_context() {}\n"
@@ -284,5 +287,12 @@ if(EMSCRIPTEN)
   # having been compiled with the matching feature. Set it explicitly rather than relying on
   # inclusion order.
   target_compile_options(dx8wasm_backend PRIVATE -pthread)
+  # Same inclusion-order trap as -pthread above, and for the same reason: this target is created
+  # before cmake/emscripten.cmake runs its add_compile_options()/add_link_options(), so it
+  # inherits none of the project-wide flags. Unexercised today only because the backend's sources
+  # neither throw nor call zlib/FreeType directly — set them explicitly rather than relying on
+  # include order, which a future reorder would silently break the same way.
+  target_compile_options(dx8wasm_backend PRIVATE -fwasm-exceptions -sUSE_ZLIB=1 -sUSE_FREETYPE=1)
+  target_link_options(dx8wasm_backend PRIVATE -fwasm-exceptions -sUSE_ZLIB=1 -sUSE_FREETYPE=1)
   message(STATUS "dx8wasm backend enabled (WASM) - implementation for the DXVK d3d8.h ABI")
 endif()
