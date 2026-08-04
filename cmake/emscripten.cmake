@@ -39,20 +39,38 @@ add_compile_options(-pthread)
 # GX_HEAP_MB overrides the size. It must stay a FIXED size whatever you choose — do not switch
 # to ALLOW_MEMORY_GROWTH to save memory, for the reason above.
 #
-# Why this blocks mobile: emscripten preloads the asset bundle into MEMFS, which is RAM, so the
-# heap has to be larger than the packed assets (~2 GB for the in-game set). No phone browser
-# will hand out 3.5 GB — iOS Safari caps far below it. Making mobile viable therefore is not a
-# matter of lowering this number; it needs the assets to stop being copied into RAM wholesale
-# (on-demand reads from OPFS), or a much smaller archive subset. This knob exists so that work
-# can be measured:
-#   emcmake cmake ... -DGX_HEAP_MB=1024
-set(GX_HEAP_MB "3584" CACHE STRING "Fixed wasm heap size in MB (must exceed the preloaded asset bundle)")
+# The heap does NOT have to exceed the asset bundle. This comment used to say it did, and that
+# was wrong — it cost the project a documented "mobile is blocked by the fixed heap" conclusion
+# that was never true. Emscripten's file_packager passes canOwn=TRUE to FS_createDataFile, and
+# MEMFS then stores `node.contents = buffer.subarray(...)` — a REFERENCE into the ArrayBuffer the
+# fetch produced. That buffer lives in the JS heap, NOT in wasm memory, and read-only .big
+# archives are never written to, so they are never copied in.
+#
+# MEASURED 2026-08-04 against the 1295.64 MiB packed bundle (build/shrunk-audio-only): a Release
+# engine at GX_HEAP_MB=1024, 512 and even 256 all boot Alpine Assault to a full 60 FPS match —
+# terrain, HUD, radar, units — reaching simulation frame ~8780-8822 with zero aborts and no OOM.
+# 256 MiB is a FIFTH of the bundle. So the number below buys nothing for asset delivery.
+#
+# What actually costs memory, and where mobile is really blocked: the fetched bundle occupies
+# ~1× its size in the JS heap for the whole session, and TRANSIENTLY ~2× during download, because
+# file_packager's fetchRemotePackage() accumulates every chunk in an array and then allocates a
+# second full-size Uint8Array to concatenate them. For a 1.27 GiB bundle that is a ~2.6 GiB peak
+# no heap setting can influence. The fix is page-side and supported: implement
+# Module.getPreloadedPackage (file_packager skips its own fetch when it exists) and stream into
+# one preallocated buffer, since REMOTE_PACKAGE_SIZE/Content-Length gives the size up front.
+#
+# So: keep this large on desktop because it is free there, but do not treat it as the mobile
+# blocker. Measure a candidate with:
+#   emcmake cmake ... -DGX_HEAP_MB=1024      # link-only change, ~15 s to re-link
+set(GX_HEAP_MB "3584" CACHE STRING "Fixed wasm heap size in MB (fixed, non-growable; need NOT exceed the asset bundle)")
 math(EXPR GX_HEAP_BYTES "${GX_HEAP_MB} * 1024 * 1024")
 message(STATUS "GeneralsX: fixed wasm heap = ${GX_HEAP_MB} MB")
 add_link_options(-pthread -sPROXY_TO_PTHREAD=1
-  -sINITIAL_MEMORY=${GX_HEAP_BYTES} -sALLOW_MEMORY_GROWTH=0)  # fixed (holds the in-game asset bundle
-  # incl. full audio ~2GB + engine runtime; wasm32 caps at 4GB. Non-growable so WebGL accepts typed-
-  # array views of the SharedArrayBuffer. Raised from 2GB when base-game audio was added (~640MB).
+  -sINITIAL_MEMORY=${GX_HEAP_BYTES} -sALLOW_MEMORY_GROWTH=0)  # engine runtime only — the asset
+  # bundle is NOT in here (see above: MEMFS references the JS-side fetch buffer). wasm32 caps at
+  # 4GB. Non-growable so WebGL accepts typed-array views of the SharedArrayBuffer. It was raised to
+  # 3.5GB on the belief that the bundle had to fit; that belief was disproved 2026-08-04, and it is
+  # kept only because headroom is free on desktop.
 
 # Exceptions: the engine uses try/catch for control flow (INI loader throws
 # INI_CANT_OPEN_FILE etc., catches, sometimes re-throws). Emscripten disables
