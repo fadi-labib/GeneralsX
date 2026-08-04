@@ -31,14 +31,17 @@
 #include <emscripten.h>  // emscripten_set_main_loop for the browser render loop
 #include <exception>     // std::exception in the wasm frame's resilient catch
 #include <dx8wasm/telemetry.h>
-// GeneralsX @build dx8wasm — per-frame timing for the web build. Two spans a frame at
-// 60 FPS is 120 ring records/second against a 1024-record ring drained at 1 Hz: fits
-// with headroom, and dx8wasm_tel_dropped() reports it if it ever stops fitting.
+// GeneralsX @build dx8wasm — per-frame timing for the web build. Two spans plus one
+// gauge a frame at 60 FPS is 180 ring records/second against a 1024-record ring
+// drained at 1 Hz: fits with headroom, and dx8wasm_tel_dropped() reports it if it
+// ever stops fitting.
 #define GX_TEL_SPAN_BEGIN() const double gx_t0 = emscripten_get_now()
 #define GX_TEL_SPAN_END(name) dx8wasm_tel_span(name, emscripten_get_now() - gx_t0)
+#define GX_TEL_GAUGE(name, value) dx8wasm_tel_gauge(name, (double)(value))
 #else
 #define GX_TEL_SPAN_BEGIN() do {} while (0)
 #define GX_TEL_SPAN_END(name) do {} while (0)
+#define GX_TEL_GAUGE(name, value) do {} while (0)
 #endif
 
 #include "Common/ActionManager.h"
@@ -1207,6 +1210,20 @@ void GameEngine::update()
 			} else
 #endif
 			{ GX_TEL_SPAN_BEGIN(); TheGameLogic->UPDATE(); GX_TEL_SPAN_END("frame.logic"); }
+
+			// GeneralsX @build dx8wasm — the simulation frame number, sampled after the
+			// update that advanced it. Emitted once here rather than inside each branch
+			// above so the -stress path and the normal path cannot diverge.
+			//
+			// Why a gauge and not a span attribute: this is the only signal that makes a
+			// saved-game restore *provable* from outside the engine. m_frame only ever
+			// advances during play, so a single backwards step is a reset — and a load is
+			// the one thing in normal play that resets it. Every timing-derived
+			// alternative was tried and lied (see generals-dx8wasm
+			// docs/HANDOVER-2026-08-04.md §2.0): a restore is a blocking load with no
+			// logic frames at all, not one slow frame, and the ring's own batching means
+			// arrival gaps say nothing about when the engine stopped.
+			GX_TEL_GAUGE("logic.frame", TheGameLogic->getFrame());
 
 			if (!TheFramePacer->isTimeFrozen())
 			{
