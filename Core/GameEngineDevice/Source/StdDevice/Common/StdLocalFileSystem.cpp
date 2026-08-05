@@ -31,6 +31,12 @@
 #include "Common/PerfTimer.h"
 #include "StdDevice/Common/StdLocalFileSystem.h"
 #include "StdDevice/Common/StdLocalFile.h"
+#ifdef __EMSCRIPTEN__
+// GeneralsX @build dx8wasm - on-demand OPFS archive reads.
+#include "StdDevice/Common/OpfsFile.h"
+#include <dx8wasm/opfs.h>
+#include <string.h>
+#endif
 
 #include <algorithm>
 #include <filesystem>
@@ -203,6 +209,34 @@ File * StdLocalFileSystem::openFile(const Char *filename, Int access, size_t buf
 	if (strlen(filename) <= 0) {
 		return nullptr;
 	}
+
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - serve registered .big archives straight from OPFS instead of
+	// from a ~1.3 GiB copy held in the wasm heap. dx8wasm_opfs_ready() is 0 unless the page
+	// started the I/O worker, so this whole branch is inert by default and every path takes the
+	// StdLocalFile route exactly as before — that fallback is what the design leans on.
+	//
+	// This must sit BEFORE fixFilenameFromWindowsPath(): that helper resolves the name against
+	// the real (MEM)FS and returns an empty path when nothing is there, and the entire point of
+	// this feature is that the archive is NOT there. Hooking in after it would mean the OPFS
+	// branch only ever ran for files that were already in RAM.
+	if (dx8wasm_opfs_ready() && !(access & (File::WRITE | File::APPEND | File::TRUNCATE | File::CREATE))) {
+		const char* base = filename;
+		for (const char* p = filename; *p; ++p) {
+			if (*p == '\\' || *p == '/') {
+				base = p + 1;
+			}
+		}
+		if (dx8wasm_opfs_index_of(base) >= 0) {
+			OpfsFile* of = newInstance(OpfsFile);
+			if (of->openOpfs(base, access)) {
+				of->deleteOnClose();
+				return of;
+			}
+			deleteInstance(of);
+		}
+	}
+#endif
 
 	std::filesystem::path path = fixFilenameFromWindowsPath(filename, access);
 

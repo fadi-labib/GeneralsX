@@ -275,6 +275,11 @@ if(EMSCRIPTEN)
     ${DX8WASM_DIR}/runtime/graphics-ff/ff_shader.cpp
     ${DX8WASM_DIR}/runtime/coverage/coverage.cpp
     ${DX8WASM_DIR}/runtime/telemetry/telemetry.cpp
+    # On-demand OPFS archive reads: the blocking ranged-read primitive the engine thread calls
+    # (dx8wasm runtime/include/dx8wasm/opfs.h). Compiled with -pthread below, which is what
+    # enables its Atomics.wait path — without that flag the file still builds but the feature
+    # compiles out to "always off".
+    ${DX8WASM_DIR}/runtime/platform/opfs_bridge.cpp
     ${DX8WASM_DIR}/runtime/runtime.cpp
     ${_dx8_stub})
   target_include_directories(dx8wasm_backend PUBLIC

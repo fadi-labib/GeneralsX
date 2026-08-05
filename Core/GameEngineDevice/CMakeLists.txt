@@ -207,10 +207,12 @@ if(NOT IS_VS6_BUILD)
     list(APPEND GAMEENGINEDEVICE_SRC
         Include/StdDevice/Common/StdBIGFile.h
         Include/StdDevice/Common/StdBIGFileSystem.h
+        Include/StdDevice/Common/OpfsFile.h
         Include/StdDevice/Common/StdLocalFile.h
         Include/StdDevice/Common/StdLocalFileSystem.h
         Source/StdDevice/Common/StdBIGFile.cpp
         Source/StdDevice/Common/StdBIGFileSystem.cpp
+        Source/StdDevice/Common/OpfsFile.cpp
         Source/StdDevice/Common/StdLocalFile.cpp
         Source/StdDevice/Common/StdLocalFileSystem.cpp
     )

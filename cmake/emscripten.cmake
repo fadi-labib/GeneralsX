@@ -106,6 +106,13 @@ add_link_options(-lidbfs.js)
 # web-runtime/user-data-test.mjs; the BYO path had the same latent failure.
 add_link_options(-sEXPORTED_RUNTIME_METHODS=FS)
 
+# GeneralsX @build dx8wasm - on-demand OPFS archive reads (web/byo-assets.js with ?opfs=1).
+# The page must allocate the shared control block and learn its address before it can start the
+# I/O worker, so these two dx8wasm entry points have to survive dead-code elimination. If they
+# are missing the page cannot enable the feature and silently keeps the in-RAM mount, which is
+# exactly the failure that looks like success.
+add_link_options(-sEXPORTED_FUNCTIONS=_main,_dx8wasm_opfs_init,_dx8wasm_opfs_control_addr)
+
 # Embed a TrueType font at fonts/arial.ttf in MEMFS. The web has no fontconfig, so
 # FontCharsClass::Locate_Font_FontConfig (render2dsentence.cpp) resolves fonts from
 # this bundled path (arial.ttf = universal fallback; the UI is Arial-based). Without
