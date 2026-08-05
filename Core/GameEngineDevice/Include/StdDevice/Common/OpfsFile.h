@@ -68,6 +68,7 @@ protected:
 	// One byte at the current position, or -1 at end of archive. Served from m_buf, which is
 	// refilled in LOOKAHEAD-sized ranged reads.
 	Int  readByte();
+	Bool fill(Int pos);             ///< make the lookahead buffer cover `pos`
 	void dropLookahead();
 
 	enum { LOOKAHEAD = 4096 };

@@ -104,7 +104,13 @@ add_link_options(-lidbfs.js)
 # touches it - which broke BOTH web/user-data.js (the IDBFS mount) and web/byo-assets.js
 # (the bring-your-own-assets import, whose whole job is FS.writeFile). Caught by
 # web-runtime/user-data-test.mjs; the BYO path had the same latent failure.
-add_link_options(-sEXPORTED_RUNTIME_METHODS=FS)
+#
+# HEAPU8 and wasmMemory are exported for the same class of reason, added with the OPFS work:
+# the page has to hand the I/O worker the wasm memory object itself (it is the SharedArrayBuffer
+# the control block lives in), and Emscripten attaches neither to Module unless asked. Without
+# them byo-assets.js throws "Cannot read properties of undefined (reading 'buffer')" and falls
+# back to the in-RAM mount — which boots perfectly, so the loss is invisible without a harness.
+add_link_options(-sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,wasmMemory)
 
 # GeneralsX @build dx8wasm - on-demand OPFS archive reads (web/byo-assets.js with ?opfs=1).
 # The page must allocate the shared control block and learn its address before it can start the

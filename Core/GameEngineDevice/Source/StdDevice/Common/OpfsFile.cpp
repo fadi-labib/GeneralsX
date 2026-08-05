@@ -97,6 +97,33 @@ Int OpfsFile::read(void* buffer, Int bytes)
 		m_pos += bytes;
 		return bytes;
 	}
+
+	// Small reads go through the lookahead buffer, and this is not an optimisation — it is what
+	// makes the feature usable at all. StdBIGFileSystem::openArchiveFile parses each archive's
+	// table with read(&c, 1) per filename character (StdBIGFileSystem.cpp:591) plus two 4-byte
+	// reads per entry, which across the retail archive set is hundreds of thousands of reads.
+	// Unbuffered, each one is a cross-thread round trip: measured at ~370/s on the async
+	// fallback, i.e. an engine that never finishes booting. One 4 KiB refill covers thousands of
+	// them.
+	if (bytes <= LOOKAHEAD) {
+		Int done = 0;
+		while (done < bytes) {
+			if (!fill(m_pos)) {
+				break;
+			}
+			const Int at = m_pos - m_bufAt;
+			Int n = m_bufLen - at;
+			if (n > bytes - done) {
+				n = bytes - done;
+			}
+			memcpy((unsigned char*)buffer + done, m_buf + at, (size_t)n);
+			m_pos += n;
+			done += n;
+		}
+		return (done > 0 || bytes == 0) ? done : -1;
+	}
+
+	// Large reads (assets themselves) go straight through: buffering them would only add a copy.
 	const Int got = dx8wasm_opfs_read(m_idx, (uint32_t)m_pos, buffer, (uint32_t)bytes);
 	if (got < 0) {
 		return -1;
@@ -105,23 +132,33 @@ Int OpfsFile::read(void* buffer, Int bytes)
 	return got;
 }
 
+// Make the lookahead buffer cover `pos`. FALSE means the read failed or there is nothing there.
+Bool OpfsFile::fill(Int pos)
+{
+	if (pos < 0 || pos >= m_size) {
+		return FALSE;
+	}
+	if (pos >= m_bufAt && pos < m_bufAt + m_bufLen) {
+		return TRUE;
+	}
+	Int want = m_size - pos;
+	if (want > LOOKAHEAD) {
+		want = LOOKAHEAD;
+	}
+	const Int got = dx8wasm_opfs_read(m_idx, (uint32_t)pos, m_buf, (uint32_t)want);
+	if (got <= 0) {
+		dropLookahead();
+		return FALSE;
+	}
+	m_bufAt = pos;
+	m_bufLen = got;
+	return TRUE;
+}
+
 Int OpfsFile::readByte()
 {
-	if (m_pos < 0 || m_pos >= m_size) {
+	if (!fill(m_pos)) {
 		return -1;
-	}
-	if (m_pos < m_bufAt || m_pos >= m_bufAt + m_bufLen) {
-		Int want = m_size - m_pos;
-		if (want > LOOKAHEAD) {
-			want = LOOKAHEAD;
-		}
-		const Int got = dx8wasm_opfs_read(m_idx, (uint32_t)m_pos, m_buf, (uint32_t)want);
-		if (got <= 0) {
-			dropLookahead();
-			return -1;
-		}
-		m_bufAt = m_pos;
-		m_bufLen = got;
 	}
 	const Int b = m_buf[m_pos - m_bufAt];
 	m_pos++;
@@ -133,6 +170,7 @@ Int OpfsFile::readByte()
 Bool OpfsFile::openOpfs(const Char*, Int) { return FALSE; }
 Int  OpfsFile::read(void*, Int) { return -1; }
 Int  OpfsFile::readByte() { return -1; }
+Bool OpfsFile::fill(Int) { return FALSE; }
 
 #endif  // __EMSCRIPTEN__
 
