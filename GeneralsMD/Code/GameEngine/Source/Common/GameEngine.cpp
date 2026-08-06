@@ -1220,7 +1220,7 @@ void GameEngine::update()
 			// advances during play, so a single backwards step is a reset — and a load is
 			// the one thing in normal play that resets it. Every timing-derived
 			// alternative was tried and lied (see generals-dx8wasm
-			// docs/HANDOVER-2026-08-04.md §2.0): a restore is a blocking load with no
+			// docs/HARNESS-TRAPS.md §1): a restore is a blocking load with no
 			// logic frames at all, not one slow frame, and the ring's own batching means
 			// arrival gaps say nothing about when the engine stopped.
 			GX_TEL_GAUGE("logic.frame", TheGameLogic->getFrame());
