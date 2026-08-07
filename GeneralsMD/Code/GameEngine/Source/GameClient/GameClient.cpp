@@ -33,6 +33,61 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 #include "GameClient/GameClient.h"
 
+// GeneralsX @build dx8wasm --- phase breakdown of frame.client -------------------------------
+// frame.client wraps this whole function (GameEngine.cpp). Once GLBuffer::Unlock stopped
+// respecifying whole buffers, the frame fell from 24.96 ms to 5.43 ms and the SDK's gl.* gauges --
+// which had accounted for 98.5% of the old frame -- accounted for only 53%. The other ~2.5 ms is
+// engine CPU work inside this function that nothing has ever timed. It did not grow; removing the
+// dominant term made it visible.
+//
+// AGGREGATED, NOT PER-FRAME, and that is not a detail. GameEngine.cpp's budget note reasons from
+// "two spans plus one gauge a frame at 60 FPS is 180 records/second" against a 1024-record ring --
+// a premise the 4.6x made stale: at the 184 fps now measured those same three records are 552/s.
+// Emitting eleven more PER FRAME would be ~2000/s and would destroy the telemetry it reports
+// through, which has already happened once in this project (IM-07). Per-second averages cost 11
+// records/second instead.
+//
+// client.accounted_ms is the instrument's own completeness check: frame.client minus it is the
+// part still un-timed. An instrument that cannot report what it is missing invites its residual
+// being read as zero.
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <dx8wasm/telemetry.h>
+namespace {
+double g_cAccFrames = 0.0;
+double g_cInput = 0.0, g_cWindow = 0.0, g_cVideo = 0.0, g_cDrawables = 0.0, g_cTerrain = 0.0;
+double g_cDispUpd = 0.0, g_cDispDraw = 0.0, g_cStrings = 0.0, g_cShell = 0.0, g_cUI = 0.0;
+double g_cLastEmit = 0.0;
+// Doubles throughout, never cast to a 32-bit integer: a saturating fptoui silently killed the
+// telemetry pump in this project once (dx8wasm runtime/telemetry/telemetry.cpp, now_ms()).
+struct GxPhase {
+	double &acc, t0;
+	explicit GxPhase(double &a) : acc(a), t0(emscripten_get_now()) {}
+	~GxPhase() { acc += emscripten_get_now() - t0; }
+};
+
+// Counts the frame and emits, from a DESTRUCTOR, so that every exit path from update() is counted
+// -- including the intro/movie early return. The first version of this instrument counted only the
+// full path while frame.client counted every call, so the two had different denominators and the
+// per-frame phase averages came out inflated. client.accounted_ms then exceeded frame.client and
+// the residual went NEGATIVE, which is impossible in a real accounting: the completeness check
+// caught a bug in its own instrument. A residual that could only ever be positive would have shown
+// a plausible ~94% and been believed.
+struct GxFrameEnd {
+	~GxFrameEnd();
+};
+}  // namespace
+#define GX_PHASE(acc) GxPhase gx_phase_scope_(acc)
+#define GX_NOW() emscripten_get_now()
+#define GX_ADD(acc, t0) (acc) += emscripten_get_now() - (t0)
+#define GX_FRAME_END() GxFrameEnd gx_frame_end_scope_
+#else
+#define GX_PHASE(acc) do {} while (0)
+#define GX_NOW() 0.0
+#define GX_ADD(acc, t0) do { (void)(t0); } while (0)
+#define GX_FRAME_END() do {} while (0)
+#endif
+
 // USER INCLUDES //////////////////////////////////////////////////////////////
 #include "Common/ActionManager.h"
 #include "Common/GameEngine.h"
@@ -523,6 +578,13 @@ void GameClient::update()
 	USE_PERF_TIMER(GameClient_update)
 	PROFILER_FRAME_MARK;
 	PROFILER_SECTION_COLOR(0x2196F3);
+	// Counts this frame and emits once a second, from a destructor so that the intro early return
+	// below is counted too. frame.client counts every call to this function; if the phases counted
+	// only some of them the two would not be comparable.
+	GX_FRAME_END();
+	// Everything from here to the intro check is input and 2D housekeeping: snow, anim2d,
+	// keyboard, Eva, mouse. Marked rather than scoped because it is not a braced block.
+	const double gxInputT0 = GX_NOW();
 	// create the FRAME_TICK message
 	GameMessage *frameMsg = TheMessageStream->appendMessage( GameMessage::MSG_FRAME_TICK );
 	frameMsg->appendTimestampArgument( getFrame() );
@@ -634,21 +696,27 @@ void GameClient::update()
       TheInGameUI->setCameraTrackingDrawable( FALSE );
   }
 
+	GX_ADD(g_cInput, gxInputT0);
+
 	if(TheGlobalData->m_playIntro || TheGlobalData->m_afterIntro)
 	{
-		// redraw all views, update the GUI
-		TheDisplay->UPDATE();
-		TheDisplay->DRAW();
-		return;
+		// redraw all views, update the GUI. Timed into the SAME phases as the main path: these
+		// frames are cheaper, and leaving them out of the numerator while frame.client kept them
+		// in the denominator is precisely what made the residual go negative.
+		{ GX_PHASE(g_cDispUpd);  TheDisplay->UPDATE(); }
+		{ GX_PHASE(g_cDispDraw); TheDisplay->DRAW(); }
+		return;   // GX_FRAME_END still counts this frame — it runs from a destructor
 	}
 
 	// update the window system itself
 	{
+		GX_PHASE(g_cWindow);
 		TheWindowManager->UPDATE();
 	}
 
 	// update the video player
 	{
+		GX_PHASE(g_cVideo);
 		TheVideoPlayer->UPDATE();
 	}
 
@@ -656,6 +724,10 @@ void GameClient::update()
 
 	const Int localPlayerIndex = rts::getObservedOrLocalPlayer()->getPlayerIndex();
 
+	// Ghost-object bookkeeping, per-drawable shroud classification, and updateDrawable() for every
+	// drawable in the world. Timed as one phase: they are one loop over the same set, and splitting
+	// them would add two clock reads per drawable rather than two per frame.
+	const double gxDrawablesT0 = GX_NOW();
 	if (!freezeTime)
 	{
 		Int numPlayers = ThePlayerList->getPlayerCount();
@@ -757,18 +829,27 @@ void GameClient::update()
 
 	}
 
+	GX_ADD(g_cDrawables, gxDrawablesT0);
+
 	// update the terrain visuals
 	{
+		GX_PHASE(g_cTerrain);
 		TheTerrainVisual->UPDATE();
 	}
 
 	// update display
 	{
+		GX_PHASE(g_cDispUpd);
 		TheDisplay->UPDATE();
 	}
 
 	{
 		USE_PERF_TIMER(GameClient_draw)
+		// The 3D render. Every GL call the SDK times lives inside here, so
+		// client.display_draw_ms MINUS the gl.* subtotal is the scene work that produces those
+		// calls -- traversal, culling, render-list building -- which no gauge has ever separated
+		// from the driver cost it feeds.
+		GX_PHASE(g_cDispDraw);
 
 	// redraw all views, update the GUI
 	//if(TheGameLogic->getFrame() >= 2)
@@ -778,19 +859,66 @@ void GameClient::update()
 
 	{
 		// let display string factory handle its update
+		GX_PHASE(g_cStrings);
 		TheDisplayStringManager->update();
 	}
 
 	{
 		// update the shell
+		GX_PHASE(g_cShell);
 		TheShell->UPDATE();
 	}
 
 	{
 		// update the in game UI
+		GX_PHASE(g_cUI);
 		TheInGameUI->UPDATE();
 	}
+
 }
+
+#ifdef __EMSCRIPTEN__
+namespace {
+// Runs on EVERY exit from GameClient::update(), including the intro early return -- see the type's
+// declaration for why that matters.
+GxFrameEnd::~GxFrameEnd()
+{
+	g_cAccFrames += 1.0;
+	const double now = emscripten_get_now();
+	if (g_cLastEmit == 0.0) g_cLastEmit = now;
+	if (now - g_cLastEmit < 1000.0 || g_cAccFrames <= 0.0) return;
+
+	const double n = g_cAccFrames;
+	// The denominator itself, because an average whose divisor is invisible cannot be checked
+	// against anything. It also reports the real frame rate directly: frame.client is only PART of
+	// the wall-clock frame, so 1000/frame.client is not fps and reading it as fps overstated this
+	// port by 3x once.
+	dx8wasm_tel_gauge("client.frames",            n);
+	dx8wasm_tel_gauge("client.input_ms",          g_cInput     / n);
+	dx8wasm_tel_gauge("client.window_ms",         g_cWindow    / n);
+	dx8wasm_tel_gauge("client.video_ms",          g_cVideo     / n);
+	dx8wasm_tel_gauge("client.drawables_ms",      g_cDrawables / n);
+	dx8wasm_tel_gauge("client.terrain_ms",        g_cTerrain   / n);
+	dx8wasm_tel_gauge("client.display_update_ms", g_cDispUpd   / n);
+	dx8wasm_tel_gauge("client.display_draw_ms",   g_cDispDraw  / n);
+	dx8wasm_tel_gauge("client.strings_ms",        g_cStrings   / n);
+	dx8wasm_tel_gauge("client.shell_ms",          g_cShell     / n);
+	dx8wasm_tel_gauge("client.ingameui_ms",       g_cUI        / n);
+	// The completeness check. frame.client - client.accounted_ms is what is STILL un-timed inside
+	// update(); if that residual is large the instrument is incomplete and says so, rather than
+	// letting a reader assume these phases are the whole frame. It is deliberately SIGNED: a
+	// negative residual is impossible in a correct accounting, and it was a negative residual that
+	// exposed the denominator mismatch this destructor exists to fix.
+	dx8wasm_tel_gauge("client.accounted_ms",
+		(g_cInput + g_cWindow + g_cVideo + g_cDrawables + g_cTerrain +
+		 g_cDispUpd + g_cDispDraw + g_cStrings + g_cShell + g_cUI) / n);
+	g_cAccFrames = 0.0;
+	g_cInput = g_cWindow = g_cVideo = g_cDrawables = g_cTerrain = 0.0;
+	g_cDispUpd = g_cDispDraw = g_cStrings = g_cShell = g_cUI = 0.0;
+	g_cLastEmit = now;
+}
+}  // namespace
+#endif
 
 void GameClient::step()
 {
