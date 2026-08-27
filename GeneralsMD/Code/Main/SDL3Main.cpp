@@ -301,9 +301,23 @@ int main(int argc, char* argv[])
 		// (default) WebGL canvas, alpha=0 fragments composite transparent and the page
 		// shows through -> terrain looks black. ALPHA_SIZE=0 makes the canvas opaque.
 		SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
+		// NOT SDL_WINDOW_RESIZABLE. On Emscripten that flag means "the canvas follows the page":
+		// SDL's window-resize handler (Emscripten_HandleResize) reads the canvas CSS size on every
+		// browser resize and REWRITES canvas.width/height to it, then reports WINDOW_RESIZED so
+		// window->w becomes the CSS width. This engine fixes its resolution at boot (-xres/-yres
+		// below) and handleWindowEvent ignores RESIZED, so the result was a boot-resolution frame
+		// drawn into a canvas of another size and a pointer scale (window->w / css_w) of 1:1 CSS
+		// pixels while the game still divides by its boot resolution -- the "enter fullscreen and
+		// the cursor is way off / the frame looks stale" defect (generals.fadilabib.com,
+		// 2026-08-27). Without the flag SDL never touches the canvas on a page resize; the page's
+		// aspect-fit (web/game-html.mjs fit()) scales the fixed backing via CSS and SDL's live
+		// css-size read keeps the pointer mapping exact. SDL_SetWindowSize still works on a
+		// non-resizable window, so the viewport fit below and the options-menu resolution path
+		// (W3DDisplay SDL3_ApplyWindowModeForRenderConfig) are unaffected.
+		// Gate: generals-dx8wasm/web-runtime/canvas-resize-test.mjs.
 		TheSDL3Window = SDL_CreateWindow(
 			"Command & Conquer Generals: Zero Hour",
-			1024, 768, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+			1024, 768, SDL_WINDOW_OPENGL);
 		if (!TheSDL3Window) {
 			fprintf(stderr, "FATAL: Failed to create SDL3 GL window: %s\n", SDL_GetError());
 			SDL_Quit();
