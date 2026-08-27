@@ -42,6 +42,9 @@
 // SDL3_image now finds system libpng via pkg-config (CMAKE_PREFIX_PATH reordered in cmake/sdl3.cmake)
 #ifndef __EMSCRIPTEN__
 #include <SDL3_image/SDL_image.h>
+#else
+// GeneralsX @build dx8wasm - cursor.hotspot_* boot counters (see initCursorResources)
+#include <dx8wasm/telemetry.h>
 #endif
 // GeneralsX @bugfix BenderAI 22/02/2026 Add array header for AnimatedCursor
 #include <array>
@@ -184,13 +187,28 @@ SDL3Mouse::~SDL3Mouse(void)
 // height is 2x the real height (the top half is the XOR colour bitmap, the bottom half a
 // 1-bit AND transparency mask), both stored bottom-up. Handles 1/4/8-bit palettized and
 // 24/32-bit direct; returns an RGBA32 SDL_Surface, or NULL if the frame isn't a plain DIB.
+// Boot-time hotspot accounting, emitted as two batched telemetry counters after
+// initCursorResources (never per-cursor: 50+ records in one boot burst could flood the
+// 1024-slot ring and invalidate every counter in its window). A regressed decoder that
+// drops hotspots moves every cursor into hotspot_zero, which is what the gate
+// (web-runtime/cursor-hotspot-test.mjs) asserts against.
+static int g_gxCursorHotspotNonzero = 0;
+static int g_gxCursorHotspotZero = 0;
+
 static SDL_Surface* gx_decode_cur_frame(const void* data, int size)
 {
 	const Uint8* p = (const Uint8*)data;
 	if (!p || size < 6 + 16 + 40) return NULL;
+	const Uint16 type  = (Uint16)(p[2] | (p[3] << 8));         // 1 = .ico, 2 = .cur
 	const Uint16 count = (Uint16)(p[4] | (p[5] << 8));
 	if (count < 1) return NULL;
 	const Uint8* e = p + 6;                                    // first ICONDIRENTRY
+	// In a .cur entry these two WORDs are the HOTSPOT (which image pixel sits on the pointer);
+	// in a .ico they are planes/bitcount and must be ignored. Dropping them anchored every
+	// cursor at its top-left pixel -- the art sat ~15px off the true click point, since 50 of
+	// the 52 shipped .ani frames declare a non-zero hotspot (most (15,15), the art's center).
+	const Uint16 hotX = (Uint16)(e[4] | (e[5] << 8));
+	const Uint16 hotY = (Uint16)(e[6] | (e[7] << 8));
 	const Uint32 imgOff = (Uint32)(e[12] | (e[13] << 8) | (e[14] << 16) | (e[15] << 24));
 	if ((int)imgOff + 40 > size) return NULL;
 	const Uint8* dib = p + imgOff;
@@ -210,6 +228,14 @@ static SDL_Surface* gx_decode_cur_frame(const void* data, int size)
 	if (andB + (size_t)andRow * H > p + size) return NULL;     // bounds
 	SDL_Surface* surf = SDL_CreateSurface(W, H, SDL_PIXELFORMAT_RGBA32);
 	if (!surf) return NULL;
+	if (type == 2)
+	{
+		// Same contract SDL3_image fulfils on desktop: loadCursorFromFile reads these
+		// properties (defaulting to 0) into SDL_CreateAnimatedCursor.
+		SDL_PropertiesID props = SDL_GetSurfaceProperties(surf);
+		SDL_SetNumberProperty(props, SDL_PROP_SURFACE_HOTSPOT_X_NUMBER, hotX);
+		SDL_SetNumberProperty(props, SDL_PROP_SURFACE_HOTSPOT_Y_NUMBER, hotY);
+	}
 	Uint8* out = (Uint8*)surf->pixels;
 	for (int y = 0; y < H; ++y)
 	{
@@ -401,6 +427,12 @@ AnimatedCursor* SDL3Mouse::loadCursorFromFile(const char* filepath)
 					return NULL;
 					#endif
 				}
+
+				#ifdef __EMSCRIPTEN__
+				// The cursor exists past every failure path; classify its hotspot.
+				if (hot_spot_x || hot_spot_y) ++g_gxCursorHotspotNonzero;
+				else                          ++g_gxCursorHotspotZero;
+				#endif
 			}
 
 			break;
@@ -607,6 +639,12 @@ void SDL3Mouse::initCursorResources(void)
 			}
 		}
 	}
+#ifdef __EMSCRIPTEN__
+	// Deltas since the last emit (counters are deltas, and this function can run again for
+	// late-loaded cursors); suppressed when zero so the records only exist when they say something.
+	if (g_gxCursorHotspotNonzero) { dx8wasm_tel_counter("cursor.hotspot_nonzero", g_gxCursorHotspotNonzero); g_gxCursorHotspotNonzero = 0; }
+	if (g_gxCursorHotspotZero)    { dx8wasm_tel_counter("cursor.hotspot_zero",    g_gxCursorHotspotZero);    g_gxCursorHotspotZero = 0; }
+#endif
 }
 
 /**
