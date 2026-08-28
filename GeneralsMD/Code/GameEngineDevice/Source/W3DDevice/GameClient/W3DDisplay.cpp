@@ -711,6 +711,16 @@ static void gx_destroyStaleControlBar()
 	if (oldRoot) TheWindowManager->winDestroy(oldRoot);
 }
 
+// The replay controls (ReplayControl.wnd) are built once at InGameUI init and only ever hidden or
+// shown afterwards -- GameLogic::startNewGame does not rebuild them -- so after a resolution change
+// they would sit at the old positions for every later replay. InGameUI::recreateReplayControl()
+// (added for this) destroys and rebuilds them; ShowControlBar() then shows the new window when a
+// replay is running.
+static void gx_recreateReplayControls()
+{
+	if (TheInGameUI) TheInGameUI->recreateReplayControl();
+}
+
 // The Options menu's own post-setDisplayMode sequence (OptionsMenu.cpp), minus the things that
 // belong to a human confirming a dropdown choice. Shell context only -- see the header comment.
 static void gx_rebuildShellForResolution()
@@ -722,6 +732,7 @@ static void gx_rebuildShellForResolution()
 	if (TheInGameUI) {
 		gx_destroyStaleControlBar();
 		TheInGameUI->recreateControlBar();
+		gx_recreateReplayControls();
 		TheInGameUI->refreshCustomUiResources();
 	}
 	if (TheTacticalView) {
@@ -738,6 +749,7 @@ static void gx_rebuildHudForResolution()
 	if (TheInGameUI) {
 		gx_destroyStaleControlBar();
 		TheInGameUI->recreateControlBar();        // ends in HideControlBar() -- shown again below, as startNewGame does
+		gx_recreateReplayControls();              // ShowControlBar() below shows them again if this is a replay
 		TheInGameUI->refreshCustomUiResources();
 	}
 	Player *localPlayer = ThePlayerList ? ThePlayerList->getLocalPlayer() : nullptr;

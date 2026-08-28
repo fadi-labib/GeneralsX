@@ -339,8 +339,19 @@ int main(int argc, char* argv[])
 		// the internal res stays a fixed 1024x768 unrelated to the canvas the browser
 		// composites at DPR, and clicks drift. Ported from Generals-WebAssembly WebMain.cpp.
 		{
-			int vpW = MAIN_THREAD_EM_ASM_INT({ return window.innerWidth; });
-			int vpH = MAIN_THREAD_EM_ASM_INT({ return window.innerHeight; });
+			// Device pixels, same rule as web/game-keys.js's resize path (incl. its `?dpr=` override),
+			// so the boot resolution and every later one agree on what "native" means. Without this
+			// the first resize after boot would visibly re-render a HiDPI page from soft to sharp.
+			int vpW = MAIN_THREAD_EM_ASM_INT({
+				var dpr = window.devicePixelRatio || 1;
+				try { var o = parseFloat(new URLSearchParams(location.search).get('dpr')); if (o > 0) dpr = o; } catch (e) {}
+				return Math.round(window.innerWidth * dpr);
+			});
+			int vpH = MAIN_THREAD_EM_ASM_INT({
+				var dpr = window.devicePixelRatio || 1;
+				try { var o = parseFloat(new URLSearchParams(location.search).get('dpr')); if (o > 0) dpr = o; } catch (e) {}
+				return Math.round(window.innerHeight * dpr);
+			});
 			if (vpW >= 640 && vpH >= 480) SDL_SetWindowSize(TheSDL3Window, vpW, vpH);
 
 			bool userSetRes = false;

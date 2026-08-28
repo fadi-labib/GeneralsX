@@ -4209,6 +4209,22 @@ void InGameUI::createControlBar()
 }
 
 //-------------------------------------------------------------------------------------------------
+/** GeneralsX @build dx8wasm - Rebuild the replay control GUI for the current resolution. The
+	* window is created once at init and only ever hidden/shown afterwards (startNewGame does not
+	* rebuild it), so after a resolution change it would sit at the old positions for every later
+	* replay. winDestroy() unlinks now and frees on the next window-manager update. */
+//-------------------------------------------------------------------------------------------------
+void InGameUI::recreateReplayControl()
+{
+	if (m_replayWindow)
+	{
+		TheWindowManager->winDestroy( m_replayWindow );
+		m_replayWindow = nullptr;
+	}
+	createReplayControl();
+}
+
+//-------------------------------------------------------------------------------------------------
 /** Create the replay control GUI */
 //-------------------------------------------------------------------------------------------------
 void InGameUI::createReplayControl()

@@ -567,6 +567,8 @@ public:  // ********************************************************************
 	static std::vector<Object*> getUniqueIdleWorkers(const ObjectList& idleWorkers);
 
 	virtual void recreateControlBar();
+
+	void recreateReplayControl();     ///< GeneralsX @build dx8wasm - destroy and rebuild ReplayControl.wnd (after a resolution change)
 	virtual void refreshCustomUiResources();
 	virtual void refreshNetworkLatencyResources();
 	virtual void refreshRenderFpsResources();
