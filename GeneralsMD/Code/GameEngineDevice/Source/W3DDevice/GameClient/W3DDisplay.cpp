@@ -69,8 +69,11 @@ static void drawFramerateBar();
 #include "GameClient/Drawable.h"
 #include "GameClient/GameText.h"
 #include "GameClient/GraphDraw.h"
+#include "GameClient/HeaderTemplate.h" // TheHeaderTemplateManager, for gx_apply_pending_render_resolution
+#include "GameClient/InGameUI.h" // TheInGameUI, for gx_apply_pending_render_resolution
 #include "GameClient/Line2D.h"
 #include "GameClient/Mouse.h"
+#include "GameClient/Shell.h" // TheShell, for gx_apply_pending_render_resolution
 #include "GameClient/GlobalLanguage.h"
 #include "GameClient/Water.h"
 
@@ -651,6 +654,17 @@ void gx_request_render_resolution(int width, int height)
 	s_pendingResH.store(height, std::memory_order_relaxed);
 }
 
+// setDisplayMode alone is not a complete resolution change -- confirmed the hard way: on real
+// hardware the canvas resized and clamped correctly, but menu buttons stayed at their old
+// positions and the frame looked stale, because nothing told the rest of the engine the
+// resolution moved. OptionsMenu.cpp's own resolution-change handler (the ONLY other caller of
+// setDisplayMode past engine init) runs a specific sequence after it succeeds -- global
+// resolution state, header/mouse recalculation, then recreating the shell's window layouts so
+// already-built menu screens (not just newly-created ones) get their gadgets repositioned for
+// the new resolution, which is what actually fixes the misplaced buttons. Duplicated here rather
+// than shared with OptionsMenu.cpp because that function is mid-refactor-risk (UI-preference
+// persistence and a confirm-dialog flow this trigger has no equivalent of) and this path only
+// needs the parts that make the new resolution actually take visual effect.
 extern "C" void gx_apply_pending_render_resolution()
 {
 	int width = s_pendingResW.exchange(0, std::memory_order_relaxed);
@@ -659,7 +673,25 @@ extern "C" void gx_apply_pending_render_resolution()
 	Int w = clampWidthToAspectBand((Int)width, (Int)height) & ~1;
 	Int h = (Int)height & ~1;
 	if (w == (Int)TheDisplay->getWidth() && h == (Int)TheDisplay->getHeight()) return;  // already there
-	TheDisplay->setDisplayMode(w, h, TheDisplay->getBitDepth(), TRUE);
+	if (!TheDisplay->setDisplayMode(w, h, TheDisplay->getBitDepth(), TRUE)) return;
+
+	if (TheWritableGlobalData) {
+		TheWritableGlobalData->m_xResolution = w;
+		TheWritableGlobalData->m_yResolution = h;
+	}
+	if (TheHeaderTemplateManager) TheHeaderTemplateManager->onResolutionChanged();
+	if (TheMouse) TheMouse->onResolutionChanged();
+	if (TheShell) TheShell->recreateWindowLayouts();
+	if (TheInGameUI) {
+		TheInGameUI->recreateControlBar();
+		TheInGameUI->refreshCustomUiResources();
+	}
+	if (TheTacticalView) {
+		// Matches OptionsMenu.cpp: only the limits/zoom, not the camera position itself, so the
+		// shellmap's scripted camera (or an active game's) isn't fought with mid-shot.
+		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
+		TheTacticalView->setZoomToMax();
+	}
 }
 #endif
 #endif
