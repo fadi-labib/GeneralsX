@@ -1912,11 +1912,23 @@ FontCharsClass::Store_Freetype_Char (WCHAR ch)
 	//
 	//	Copy FreeType bitmap to our buffer (convert 8-bit gray → 16-bit format)
 	//
+	// GeneralsX @bugfix dx8wasm 28/08/2026 Stay inside this glyph's cell. The cell is char_width x
+	// CharHeight in a shared, never-cleared buffer; a glyph whose descender reaches past CharHeight
+	// used to write its bottom rows into the NEXT glyph's cell, and since that glyph only fills its
+	// own rows from its y_offset down, the leftover bar survived above it -- the thin dash seen
+	// above E, T and other flat-topped letters in every menu. Clear the cell first, then clamp.
+	for ( int crow = 0; crow < CharHeight; crow++ ) {
+		for ( unsigned int ccol = 0; ccol < char_width; ccol++ ) {
+			curr_buffer_p[crow * (int)char_width + ccol] = 0;
+		}
+	}
 	for ( unsigned int row = 0; row < glyph->bitmap.rows; row++ ) {
+		if ( y_offset + (int)row >= CharHeight ) break;
 		int src_index = row * glyph->bitmap.pitch;
 		int dst_index = (y_offset + row) * char_width;
 
 		for ( unsigned int col = 0; col < glyph->bitmap.width; col++ ) {
+			if ( x_offset + (int)col >= (int)char_width ) break;
 			//
 			//	Get 8-bit grayscale pixel
 			//

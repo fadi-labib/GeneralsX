@@ -1406,6 +1406,39 @@ void OptionsMenuInit( WindowLayout *layout, void *userData )
 	// set the gamma slider
  	GadgetSliderSetPosition( sliderGamma, REAL_TO_INT(pref->getGammaValue()) );
 
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - hide the controls that cannot do anything in a browser, so they
+	// do not read as broken:
+	//   Resolution   -> the render resolution follows the browser window (web/game-keys.js ->
+	//                   gx_apply_pending_render_resolution); a pick here would be overridden by
+	//                   the next resize. Disabled as well, so the Accept path skips it entirely
+	//                   (it checks winGetEnabled()).
+	//   Gamma        -> W3DDisplay::setGamma returns early in windowed mode (always windowed on
+	//                   the web) and dx8wasm's SetGammaRamp is a no-op.
+	//   Anti-alias   -> dx8wasm has no multisample path (CheckDeviceMultiSampleType refuses all).
+	//   Online IP / HTTP proxy / firewall port + refresh -> GameSpy, whose servers shut down in
+	//                   2014; the Online route is already hidden from the main menu.
+	// LAN IP and Send Delay stay: LAN over WebRTC is the working multiplayer path.
+	{
+		struct { GameWindow *win; const char *label; } hidden[] = {
+			{ comboBoxResolution,           "OptionsMenu.wnd:ResolutionLabel" },
+			{ sliderGamma,                  "OptionsMenu.wnd:GammaLabel" },
+			{ comboBoxAntiAliasing,         nullptr },
+			{ comboBoxOnlineIP,             "OptionsMenu.wnd:StaticTextOnlineIpAddresses" },
+			{ textEntryHTTPProxy,           "OptionsMenu.wnd:StaticTextHTTPProxy" },
+			{ textEntryFirewallPortOverride,"OptionsMenu.wnd:StaticTextFirewallPortOverride" },
+			{ buttonFirewallRefresh,        nullptr },
+		};
+		for (const auto &h : hidden) {
+			if (h.win) { h.win->winHide(TRUE); h.win->winEnable(FALSE); }
+			if (h.label) {
+				GameWindow *lbl = TheWindowManager->winGetWindowFromId( nullptr, TheNameKeyGenerator->nameToKey( h.label ) );
+				if (lbl) lbl->winHide(TRUE);
+			}
+		}
+	}
+#endif
+
 	// show menu
 	layout->hide( FALSE );
 
