@@ -304,17 +304,17 @@ int main(int argc, char* argv[])
 		// NOT SDL_WINDOW_RESIZABLE. On Emscripten that flag means "the canvas follows the page":
 		// SDL's window-resize handler (Emscripten_HandleResize) reads the canvas CSS size on every
 		// browser resize and REWRITES canvas.width/height to it, then reports WINDOW_RESIZED so
-		// window->w becomes the CSS width. This engine fixes its resolution at boot (-xres/-yres
-		// below) and handleWindowEvent ignores RESIZED, so the result was a boot-resolution frame
-		// drawn into a canvas of another size and a pointer scale (window->w / css_w) of 1:1 CSS
-		// pixels while the game still divides by its boot resolution -- the "enter fullscreen and
-		// the cursor is way off / the frame looks stale" defect (generals.fadilabib.com,
-		// 2026-08-27). Without the flag SDL never touches the canvas on a page resize; the page's
-		// aspect-fit (web/game-html.mjs fit()) scales the fixed backing via CSS and SDL's live
-		// css-size read keeps the pointer mapping exact. SDL_SetWindowSize still works on a
-		// non-resizable window, so the viewport fit below and the options-menu resolution path
-		// (W3DDisplay SDL3_ApplyWindowModeForRenderConfig) are unaffected.
-		// Gate: generals-dx8wasm/web-runtime/canvas-resize-test.mjs.
+		// window->w becomes the CSS width -- with the engine's internal resolution never told, so
+		// the frame drew into a canvas of another size and the pointer scale (window->w / css_w)
+		// collapsed to 1:1 CSS pixels: the "enter fullscreen and the cursor is way off / the frame
+		// looks stale" defect (generals.fadilabib.com, 2026-08-27). Without the flag SDL never
+		// touches the canvas on a page resize. The resolution DOES follow the viewport, but through
+		// the engine, not behind its back: web/game-keys.js queues the viewport size and
+		// W3DDisplay.cpp's gx_apply_pending_render_resolution re-resolves via setDisplayMode
+		// (which calls SDL_SetWindowSize -- fine on a non-resizable window) and rebuilds the UI
+		// for it; the page's aspect-fit (web/game-html.mjs fit()) then CSS-scales whatever backing
+		// results, and SDL's live css-size read keeps the pointer mapping exact.
+		// Gate: generals-dx8wasm/web-runtime/resize-resolution-test.mjs.
 		TheSDL3Window = SDL_CreateWindow(
 			"Command & Conquer Generals: Zero Hour",
 			1024, 768, SDL_WINDOW_OPENGL);

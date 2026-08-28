@@ -74,6 +74,13 @@ static void drawFramerateBar();
 #include "GameClient/Line2D.h"
 #include "GameClient/Mouse.h"
 #include "GameClient/Shell.h" // TheShell, for gx_apply_pending_render_resolution
+#include "GameClient/ControlBar.h" // TheControlBar, for the mid-match HUD rebuild in gx_apply_pending_render_resolution
+#include "GameClient/WindowLayout.h" // the cached options layout, same
+#include "GameClient/GUICallbacks.h" // ShowControlBar, same
+#include "GameClient/GameWindowTransitions.h" // TheTransitionHandler, same
+#include "GameClient/GameWindowManager.h" // TheWindowManager, for the stale-HUD cleanup
+#include "Common/NameKeyGenerator.h"
+#include "GameClient/GadgetStaticText.h" // GadgetStaticTextSetText, for the money label re-seed
 #include "GameClient/GlobalLanguage.h"
 #include "GameClient/Water.h"
 
@@ -617,34 +624,43 @@ static void SDL3_ApplyWindowModeForRenderConfig(Bool windowed, Int renderWidth, 
 }
 
 #ifdef __EMSCRIPTEN__
-// web/game-keys.js calls gx_request_render_resolution on fullscreenchange AND on resize
-// (deferred a frame, gated to only while document.fullscreenElement is set) so the engine's
-// internal resolution follows the real screen instead of leaving a stale image in a corner of a
-// bigger canvas.
+// web/game-keys.js queues gx_request_render_resolution(innerWidth, innerHeight) -- debounced,
+// on every window resize AND every fullscreenchange -- so the engine's internal resolution
+// follows the real viewport (windowed or fullscreen) instead of CSS-scaling a boot-time image.
 //
-// The "always windowed" override just above means this engine never takes SDL's native/exclusive
-// fullscreen path, but that does NOT stop the canvas itself from resizing: SDL3's Emscripten
-// backend fills the canvas to the viewport on ANY resize once window->flags & SDL_WINDOW_FULLSCREEN
-// is set (SDL_emscriptenevents.c, Emscripten_HandleResize -- "fullscreen windows can resize on
-// Emscripten, and the canvas should fill it"), and that flag flips via SDL's OWN fullscreenchange
-// listener the moment the browser's Fullscreen API is used, independent of this override. Nothing
-// here told the engine about it before this bridge existed -- the canvas grew, the internal
-// resolution and camera did not, and the result was the original "stale frame in a corner, cursor
-// off" defect surviving a genuine fullscreen transition even after dropping SDL_WINDOW_RESIZABLE
-// (that fix only ever covered the non-fullscreen resize case).
+// Two functions, not one, because of WHERE each is allowed to run. DOM events fire on the
+// browser's main JS thread; -sPROXY_TO_PTHREAD=1 (emscripten.cmake) runs main() -- and the GL
+// context setDisplayMode ultimately touches -- on a SEPARATE worker thread. Calling straight into
+// setDisplayMode from the DOM handler crashes (`unreachable`, confirmed by direct repro).
+// gx_request_render_resolution is trivial and thread-agnostic (stores two ints);
+// gx_apply_pending_render_resolution does the real work and is only ever called from
+// wasm_engine_frame (GameEngine.cpp), which IS the correct worker thread.
 //
-// Two functions, not one, because of WHERE each is allowed to run. DOM events (fullscreenchange,
-// resize) fire on the browser's real main JS thread; -sPROXY_TO_PTHREAD=1 (emscripten.cmake) runs
-// main() -- and the GL context setDisplayMode ultimately touches -- on a SEPARATE worker thread.
-// Calling straight into setDisplayMode from the DOM handler crashes (`unreachable`, confirmed by
-// direct repro): the GL context isn't current on the calling thread. gx_request_render_resolution
-// is trivial and thread-agnostic (stores two ints); gx_apply_pending_render_resolution does the
-// real work and is only ever called from wasm_engine_frame (GameEngine.cpp), which IS the correct
-// worker thread. windowed stays TRUE in the actual apply: SDL_SetWindowSize (the branch above that
-// always runs on wasm) is the one mechanism this needs, applied at a new trigger point, not a
-// request to reopen the native fullscreen path the override above exists to avoid.
+// Why the apply is NOT simply the Options menu's resolution sequence (the 2026-08-28 pass-3
+// regression, docs/RESULTS-2026-08-28-fullscreen-native-resolution-findings.md): OptionsMenu.cpp
+// runs setDisplayMode + TheShell->recreateWindowLayouts() + TheInGameUI->recreateControlBar(),
+// and that sequence is only ever reachable from the top-level main menu -- in a match the
+// resolution combo is disabled (OptionsMenu.cpp, `comboBoxResolution->winEnable(FALSE)`), and
+// the shell stack there is exactly [MainMenu]. Fired anywhere else it breaks things the menu path
+// never exercises:
+//   * recreateWindowLayouts() destroys every screen on the shell stack and re-pushes them by
+//     filename, which re-runs each screen's init callback. The stack is deliberately KEPT during
+//     a match (Shell::hideShell's own comment), so mid-match this re-runs MainMenuInit ->
+//     TheShell->showShellMap(TRUE) -> "we're in some other kind of game, clear it out" ->
+//     TheGameLogic->exitGame() + MSG_NEW_GAME(GAME_SHELL): the player's match is torn down and
+//     the shell map loads. That is the "game resets like going from fullscreen to window".
+//   * recreateControlBar() alone rebuilds ControlBar.wnd without the per-match setup
+//     GameLogic::startNewGame does afterwards (setControlBarSchemeByPlayer +
+//     initSpecialPowershortcutBar + ShowControlBar); the result, reproduced headlessly, is the HUD
+//     frame gone and its gadgets scattered over the terrain.
+// So the apply branches on context. In the shell (no game, or the shell-map game): the full
+// Options-menu sequence, which is what repositions already-built menu screens. In a real match:
+// only the HUD is rebuilt (with the match-start setup), and the shell rebuild is deferred until
+// the shell game is back -- its screens are hidden meanwhile, so nothing stale is ever shown.
 static std::atomic<int> s_pendingResW{0};
 static std::atomic<int> s_pendingResH{0};
+static Bool s_shellLayoutsStale = FALSE;   // the shell screens were built at a resolution other than the current one
+static Int  s_shellStaleShellFrames = 0;   // frames spent waiting for a menu animation to settle before rebuilding
 
 extern "C" EMSCRIPTEN_KEEPALIVE
 void gx_request_render_resolution(int width, int height)
@@ -654,25 +670,184 @@ void gx_request_render_resolution(int width, int height)
 	s_pendingResH.store(height, std::memory_order_relaxed);
 }
 
-// setDisplayMode alone is not a complete resolution change -- confirmed the hard way: on real
-// hardware the canvas resized and clamped correctly, but menu buttons stayed at their old
-// positions and the frame looked stale, because nothing told the rest of the engine the
-// resolution moved. OptionsMenu.cpp's own resolution-change handler (the ONLY other caller of
-// setDisplayMode past engine init) runs a specific sequence after it succeeds -- global
-// resolution state, header/mouse recalculation, then recreating the shell's window layouts so
-// already-built menu screens (not just newly-created ones) get their gadgets repositioned for
-// the new resolution, which is what actually fixes the misplaced buttons. Duplicated here rather
-// than shared with OptionsMenu.cpp because that function is mid-refactor-risk (UI-preference
-// persistence and a confirm-dialog flow this trigger has no equivalent of) and this path only
-// needs the parts that make the new resolution actually take visual effect.
+// The options popup is cached on the shell (Shell::getOptionsLayout) and built at whatever
+// resolution was current, so any rebuild must drop it -- and put it back if the player had it open
+// (MainMenu.cpp / QuitMenu.cpp open it exactly like this).
+static void gx_dropCachedOptionsLayout(Bool *wasShowing)
+{
+	*wasShowing = FALSE;
+	if (!TheShell) return;
+	WindowLayout *opt = TheShell->getOptionsLayout(FALSE);
+	if (!opt) return;
+	*wasShowing = !opt->isHidden();
+	TheShell->destroyOptionsLayout();
+}
+
+static void gx_reopenOptionsLayout(Bool wasShowing)
+{
+	if (!wasShowing || !TheShell) return;
+	WindowLayout *opt = TheShell->getOptionsLayout(TRUE);
+	if (!opt) return;
+	opt->runInit();
+	opt->hide(FALSE);
+	opt->bringForward();
+}
+
+// InGameUI::recreateControlBar() looks the old bar up under the id "ControlBar.wnd" -- a name no
+// window in that layout carries (its one root is "ControlBar.wnd:ControlBarParent") -- so its
+// deleteInstance() gets a null and the old bar LEAKS. The Options menu gets away with that because
+// the bar is hidden in the shell; mid-match the old bar is showing, HideControlBar() then finds
+// only the NEW root by name, and the player ends up with two HUDs, the stale one floating over the
+// terrain (reproduced 2026-08-28). The generals-powers shortcut bar is a second layout the
+// ControlBar owns and its destructor does not free either; initSpecialPowershortcutBar(nullptr)
+// is the one call that destroys it and stops. winDestroy() unlinks now and frees on the next
+// GameWindowManager::update(), so pointers the outgoing ControlBar still holds stay valid for the
+// rest of this frame -- and recreateControlBar() deletes that object before anything runs again.
+static void gx_destroyStaleControlBar()
+{
+	if (TheControlBar) TheControlBar->initSpecialPowershortcutBar(nullptr);
+	if (!TheWindowManager) return;
+	GameWindow *oldRoot = TheWindowManager->winGetWindowFromId(nullptr, TheNameKeyGenerator->nameToKey("ControlBar.wnd:ControlBarParent"));
+	if (oldRoot) TheWindowManager->winDestroy(oldRoot);
+}
+
+// The Options menu's own post-setDisplayMode sequence (OptionsMenu.cpp), minus the things that
+// belong to a human confirming a dropdown choice. Shell context only -- see the header comment.
+static void gx_rebuildShellForResolution()
+{
+	Bool optionsWasShowing = FALSE;
+	gx_dropCachedOptionsLayout(&optionsWasShowing);   // recreateWindowLayouts destroys it anyway; this remembers whether to bring it back
+	if (TheShell) TheShell->recreateWindowLayouts();
+	gx_reopenOptionsLayout(optionsWasShowing);
+	if (TheInGameUI) {
+		gx_destroyStaleControlBar();
+		TheInGameUI->recreateControlBar();
+		TheInGameUI->refreshCustomUiResources();
+	}
+	if (TheTacticalView) {
+		// Matches OptionsMenu.cpp: only the limits/zoom, not the camera position itself, so the
+		// shellmap's scripted camera isn't fought with mid-shot.
+		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
+		TheTacticalView->setZoomToMax();
+	}
+}
+
+// Mid-match: rebuild the HUD the way GameLogic::startNewGame sets it up, leave the shell alone.
+static void gx_rebuildHudForResolution()
+{
+	if (TheInGameUI) {
+		gx_destroyStaleControlBar();
+		TheInGameUI->recreateControlBar();        // ends in HideControlBar() -- shown again below, as startNewGame does
+		TheInGameUI->refreshCustomUiResources();
+	}
+	Player *localPlayer = ThePlayerList ? ThePlayerList->getLocalPlayer() : nullptr;
+	if (TheControlBar && localPlayer) {
+		TheControlBar->setControlBarSchemeByPlayer(localPlayer);
+		TheControlBar->initSpecialPowershortcutBar(localPlayer);
+		TheControlBar->hideCommunicator(FALSE);
+		TheControlBar->markUIDirty();
+	}
+	ShowControlBar(FALSE);
+	// The money label is refreshed by InGameUI only when the amount CHANGES (a function-local
+	// `static lastMoney`), so a freshly built bar would show the layout's "$$$" placeholder until
+	// the next income tick. Seed it the way InGameUI formats it.
+	if (TheWindowManager && TheGameText && TheControlBar) {
+		GameWindow *moneyWin = TheWindowManager->winGetWindowFromId(nullptr, TheNameKeyGenerator->nameToKey("ControlBar.wnd:MoneyDisplay"));
+		Player *viewed = TheControlBar->getCurrentlyViewedPlayer();
+		if (moneyWin && viewed && viewed->getMoney()) {
+			UnicodeString buffer;
+			buffer.format(TheGameText->fetch("GUI:ControlBarMoneyDisplay"), viewed->getMoney()->countMoney());
+			GadgetStaticTextSetText(moneyWin, buffer);
+		}
+	}
+	Bool optionsWasShowing = FALSE;
+	gx_dropCachedOptionsLayout(&optionsWasShowing);   // the ESC menu's Options popup, if it was ever opened this match
+	gx_reopenOptionsLayout(optionsWasShowing);
+	if (TheTacticalView) {
+		// Limits only. Never touch zoom or position mid-match: that would yank the player's camera.
+		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
+	}
+}
+
+// Nothing to re-derive when the engine resolution is unchanged -- but the canvas backing must still
+// agree with it. SDL resizes the canvas on its own when the canvas ELEMENT is fullscreened
+// (Emscripten_HandleResize fills it to the viewport), and an equal engine resolution must not leave
+// that mismatch in place. A C++ (not extern "C") helper because TheSDL3Window is declared with C++
+// linkage in SDL3GameEngine.h.
+static void gx_syncCanvasBackingTo(Int w, Int h)
+{
+	extern SDL_Window* TheSDL3Window;
+	int cw = 0, ch = 0;
+	if (TheSDL3Window && SDL_GetWindowSize(TheSDL3Window, &cw, &ch) && (cw != w || ch != h))
+		SDL_SetWindowSize(TheSDL3Window, w, h);
+}
+
+static Bool gx_inRealMatch()
+{
+	return TheGameLogic && TheGameLogic->isInGame() && !TheGameLogic->isInShellGame();
+}
+
+// When a shell rebuild is safe. The Options menu's own path only ever reaches
+// recreateWindowLayouts() from an idle main menu, and that idleness is load-bearing:
+//   * TheTransitionHandler binds the GameWindow POINTERS of the group it is animating
+//     (TransitionWindow::init) and isFinished() only asks the current group. Rebuild while a
+//     group is mid-flight -- e.g. the menu's own reveal after a mouse move, or the logo fade a
+//     previous rebuild's MainMenuInit just queued -- and the group holds destroyed windows,
+//     never finishes, and every setGroup() after it (the fresh menu's own logo fade included)
+//     sits in the pending slot forever: menu gone, no crash. Reproduced 2026-08-28 by a ⛶ click
+//     (which moves the mouse) followed by a resize.
+//   * In a real match the shell's screens are hidden and MainMenuInit's showShellMap(TRUE) would
+//     tear the match down (see the header comment), so wait for the shell game.
+//   * isInShellGame() specifically, not "no game": in the gap between exitGame and the shell
+//     map loading, showShellMap(TRUE) would post a second MSG_NEW_GAME. The exception is a
+//     configuration with the shell map off, where the menus run over a blank background and no
+//     game ever comes.
+static Bool gx_shellRebuildSafeNow()
+{
+	if (!TheShell || !TheGameLogic || TheShell->getScreenCount() == 0) return FALSE;
+	if (gx_inRealMatch()) return FALSE;
+	if (!TheGameLogic->isInShellGame() && TheGlobalData && TheGlobalData->m_shellMapOn) return FALSE;
+	if (!TheShell->isAnimFinished()) return FALSE;   // wraps TheTransitionHandler->isFinished() plus the shell's own AnimateWindowManager
+	return TRUE;
+}
+
+// Run the deferred shell rebuild as soon as gx_shellRebuildSafeNow() allows -- normally the same
+// frame the resolution changed. A menu animation that never settles must not pin the menus at a
+// stale layout for good, so after ~3 s of waiting in the shell game the transition handler is
+// reset (dropping whatever stuck group it holds) and the rebuild goes ahead.
+static void gx_flushShellRebuildIfDue()
+{
+	if (!s_shellLayoutsStale) return;
+	if (gx_shellRebuildSafeNow()) {
+		s_shellLayoutsStale = FALSE;
+		s_shellStaleShellFrames = 0;
+		gx_rebuildShellForResolution();
+		return;
+	}
+	const Bool waitingOnAnimation = TheShell && TheGameLogic && TheGameLogic->isInShellGame() && TheShell->getScreenCount() > 0 && !gx_inRealMatch();
+	if (!waitingOnAnimation) { s_shellStaleShellFrames = 0; return; }
+	if (++s_shellStaleShellFrames < 180) return;
+	fprintf(stderr, "WARNING: gx_apply_pending_render_resolution: menu animation never settled; resetting TheTransitionHandler to rebuild the shell\n");
+	if (TheTransitionHandler) TheTransitionHandler->reset();
+	s_shellLayoutsStale = FALSE;
+	s_shellStaleShellFrames = 0;
+	gx_rebuildShellForResolution();
+}
+
 extern "C" void gx_apply_pending_render_resolution()
 {
+	gx_flushShellRebuildIfDue();   // a rebuild an earlier frame had to defer (match running, menu animating)
+
 	int width = s_pendingResW.exchange(0, std::memory_order_relaxed);
 	int height = s_pendingResH.exchange(0, std::memory_order_relaxed);
 	if (width == 0 || height == 0 || !TheDisplay) return;
-	Int w = clampWidthToAspectBand((Int)width, (Int)height) & ~1;
+	if (height < DEFAULT_DISPLAY_HEIGHT) height = DEFAULT_DISPLAY_HEIGHT;   // the engine floor is DEFAULT_DISPLAY_WIDTH x DEFAULT_DISPLAY_HEIGHT (isResolutionSupported); the page CSS-scales the canvas down
 	Int h = (Int)height & ~1;
-	if (w == (Int)TheDisplay->getWidth() && h == (Int)TheDisplay->getHeight()) return;  // already there
+	Int w = clampWidthToAspectBand((Int)width, h) & ~1;
+	if (w == (Int)TheDisplay->getWidth() && h == (Int)TheDisplay->getHeight()) {
+		gx_syncCanvasBackingTo(w, h);
+		return;
+	}
 	if (!TheDisplay->setDisplayMode(w, h, TheDisplay->getBitDepth(), TRUE)) return;
 
 	if (TheWritableGlobalData) {
@@ -681,17 +856,13 @@ extern "C" void gx_apply_pending_render_resolution()
 	}
 	if (TheHeaderTemplateManager) TheHeaderTemplateManager->onResolutionChanged();
 	if (TheMouse) TheMouse->onResolutionChanged();
-	if (TheShell) TheShell->recreateWindowLayouts();
-	if (TheInGameUI) {
-		TheInGameUI->recreateControlBar();
-		TheInGameUI->refreshCustomUiResources();
-	}
-	if (TheTacticalView) {
-		// Matches OptionsMenu.cpp: only the limits/zoom, not the camera position itself, so the
-		// shellmap's scripted camera (or an active game's) isn't fought with mid-shot.
-		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
-		TheTacticalView->setZoomToMax();
-	}
+
+	// The shell's screens are now built for the wrong resolution either way; the rebuild runs
+	// this very frame when gx_shellRebuildSafeNow() allows, otherwise as soon as it does.
+	s_shellLayoutsStale = TRUE;
+	s_shellStaleShellFrames = 0;
+	if (gx_inRealMatch()) gx_rebuildHudForResolution();
+	gx_flushShellRebuildIfDue();
 }
 #endif
 #endif
