@@ -669,8 +669,10 @@ extern "C" void gx_clamp_render_resolution(int *width, int *height)
 	*width = clampWidthToAspectBand(*width, *height) & ~1;
 }
 
-static std::atomic<int> s_pendingResW{0};
-static std::atomic<int> s_pendingResH{0};
+// One atomic word so a request cannot be read half-updated across the DOM-thread -> worker handoff:
+// high 32 bits = width, low 32 = height, 0 = nothing pending. (A torn read was self-correcting next
+// frame in practice, but the pair is free.)
+static std::atomic<uint64_t> s_pendingRes{0};
 static Bool s_shellLayoutsStale = FALSE;   // the shell screens were built at a resolution other than the current one
 static Int  s_shellStaleShellFrames = 0;   // frames spent waiting for a menu animation to settle before rebuilding
 
@@ -678,8 +680,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE
 void gx_request_render_resolution(int width, int height)
 {
 	if (width <= 0 || height <= 0) return;
-	s_pendingResW.store(width, std::memory_order_relaxed);
-	s_pendingResH.store(height, std::memory_order_relaxed);
+	s_pendingRes.store(((uint64_t)(uint32_t)width << 32) | (uint32_t)height, std::memory_order_relaxed);
 }
 
 // The options popup is cached on the shell (Shell::getOptionsLayout) and built at whatever
@@ -884,8 +885,9 @@ extern "C" void gx_apply_pending_render_resolution()
 {
 	gx_flushShellRebuildIfDue();   // a rebuild an earlier frame had to defer (match running, menu animating)
 
-	int width = s_pendingResW.exchange(0, std::memory_order_relaxed);
-	int height = s_pendingResH.exchange(0, std::memory_order_relaxed);
+	const uint64_t packed = s_pendingRes.exchange(0, std::memory_order_relaxed);
+	int width = (int)(uint32_t)(packed >> 32);
+	int height = (int)(uint32_t)(packed & 0xffffffffu);
 	if (width == 0 || height == 0 || !TheDisplay) return;
 	gx_clamp_render_resolution(&width, &height);   // the page CSS-scales whatever this yields into the viewport
 	Int w = (Int)width, h = (Int)height;

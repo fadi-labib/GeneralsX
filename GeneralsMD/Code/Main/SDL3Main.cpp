@@ -380,8 +380,8 @@ int main(int argc, char* argv[])
 			if (!userSetRes && winW >= 640 && winH >= 480) {
 				static char xv[16], yv[16], xf[] = "-xres", yf[] = "-yres";
 				static char* nargv[64];
-				snprintf(xv, sizeof(xv), "%d", winW & ~1);
-				snprintf(yv, sizeof(yv), "%d", winH & ~1);
+				snprintf(xv, sizeof(xv), "%d", winW);   // gx_clamp_render_resolution already made these even
+				snprintf(yv, sizeof(yv), "%d", winH);
 				int n = 0;
 				for (int i = 0; i < __argc && n < 59; ++i) nargv[n++] = __argv[i];
 				nargv[n++] = xf; nargv[n++] = xv; nargv[n++] = yf; nargv[n++] = yv; nargv[n] = nullptr;
