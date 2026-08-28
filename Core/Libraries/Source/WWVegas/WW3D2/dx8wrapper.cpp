@@ -1861,6 +1861,20 @@ bool DX8Wrapper::Find_Color_And_Z_Mode(int resx,int resy,int bitdepth,D3DFORMAT 
 // refresh rate
 bool DX8Wrapper::Find_Color_Mode(D3DFORMAT colorbuffer, int resx, int resy, UINT *mode)
 {
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @bugfix dx8wasm 28/08/2026 Any resolution is a valid 32-bit mode on the web. There is no
+	// display mode to switch to -- the "screen" is a canvas whose size the engine itself sets -- so
+	// requiring an exact match against the adapter's enumerated modes only decides one thing here:
+	// whether the 32-bit table matches (fine) or falls through to the 16-bit table, where
+	// Get_Valid_Texture_Format strips texture alpha and the scene renders black. That fallback fired
+	// on every boot whose clamped/floored resolution the SDK had not guessed into its list (21:9
+	// windows, HiDPI scaling, any window shorter than the 768 floor), and it is decided once at
+	// device creation -- no later Reset revisits it. Accept the 32-bit formats outright.
+	if (colorbuffer == D3DFMT_X8R8G8B8 || colorbuffer == D3DFMT_A8R8G8B8) {
+		if (mode) *mode = 0;
+		return true;
+	}
+#endif
 	UINT i,j,modemax;
 	UINT rx,ry;
 	D3DDISPLAYMODE dmode;
