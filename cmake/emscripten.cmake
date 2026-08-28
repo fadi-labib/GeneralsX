@@ -117,7 +117,15 @@ add_link_options(-sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,wasmMemory)
 # I/O worker, so these two dx8wasm entry points have to survive dead-code elimination. If they
 # are missing the page cannot enable the feature and silently keeps the in-RAM mount, which is
 # exactly the failure that looks like success.
-add_link_options(-sEXPORTED_FUNCTIONS=_main,_dx8wasm_opfs_init,_dx8wasm_opfs_control_addr)
+#
+# gx_request_render_resolution (W3DDisplay.cpp): web/game-keys.js calls this on fullscreenchange
+# and resize so the engine's internal resolution follows a genuine fullscreen transition instead
+# of leaving a stale image in a corner of a canvas SDL3 resized on its own. Missing it silently
+# reverts to that exact defect -- same failure shape as the OPFS pair above. It only queues the
+# request (thread-agnostic); gx_apply_pending_render_resolution (also W3DDisplay.cpp) does the
+# real work once per frame from wasm_engine_frame, which is an internal call within the same
+# translation unit's build graph and does not need to survive as a wasm export.
+add_link_options(-sEXPORTED_FUNCTIONS=_main,_dx8wasm_opfs_init,_dx8wasm_opfs_control_addr,_gx_request_render_resolution)
 
 # Embed a TrueType font at fonts/arial.ttf in MEMFS. The web has no fontconfig, so
 # FontCharsClass::Locate_Font_FontConfig (render2dsentence.cpp) resolves fonts from

@@ -44,6 +44,10 @@ static void drawFramerateBar();
 #include <unistd.h> // access() for file existence checks
 #include <SDL3/SDL.h> // For SDL_ShowWindow() on Linux
 #endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h> // EMSCRIPTEN_KEEPALIVE for gx_request_render_resolution
+#include <atomic> // cross-thread handoff for the pending fullscreen resolution request
+#endif
 #include <time.h>
 #include <vector>
 
@@ -505,6 +509,18 @@ inline Bool isResolutionSupported(const ResolutionDescClass &res)
 	return res.Width >= DEFAULT_DISPLAY_WIDTH && res.BitDepth >= minBitDepth;
 }
 
+// Shared with the web-only fullscreen resolution bridge below: every resolution this engine
+// offers (options menu or otherwise) has its width clamped to between the 4:3 and 16:9 widths
+// for its height. Extracted so both call sites can't drift apart on the exact arithmetic.
+inline Int clampWidthToAspectBand(Int w, Int h)
+{
+	Int minW = h * 4 / 3;
+	Int maxW = h * 16 / 9;
+	if (w < minW) w = minW;
+	if (w > maxW) w = maxW;
+	return w;
+}
+
 // SDL3 display size providers for DX8Wrapper pillarbox (registered at init)
 #ifdef SAGE_USE_SDL3
 static bool SDL3_GetNativeDisplaySize(int& outW, int& outH, float& outDensity)
@@ -596,6 +612,56 @@ static void SDL3_ApplyWindowModeForRenderConfig(Bool windowed, Int renderWidth, 
 		SDL3_EnsureNativeFullscreen(TheSDL3Window);
 	}
 }
+
+#ifdef __EMSCRIPTEN__
+// web/game-keys.js calls gx_request_render_resolution on fullscreenchange AND on resize
+// (deferred a frame, gated to only while document.fullscreenElement is set) so the engine's
+// internal resolution follows the real screen instead of leaving a stale image in a corner of a
+// bigger canvas.
+//
+// The "always windowed" override just above means this engine never takes SDL's native/exclusive
+// fullscreen path, but that does NOT stop the canvas itself from resizing: SDL3's Emscripten
+// backend fills the canvas to the viewport on ANY resize once window->flags & SDL_WINDOW_FULLSCREEN
+// is set (SDL_emscriptenevents.c, Emscripten_HandleResize -- "fullscreen windows can resize on
+// Emscripten, and the canvas should fill it"), and that flag flips via SDL's OWN fullscreenchange
+// listener the moment the browser's Fullscreen API is used, independent of this override. Nothing
+// here told the engine about it before this bridge existed -- the canvas grew, the internal
+// resolution and camera did not, and the result was the original "stale frame in a corner, cursor
+// off" defect surviving a genuine fullscreen transition even after dropping SDL_WINDOW_RESIZABLE
+// (that fix only ever covered the non-fullscreen resize case).
+//
+// Two functions, not one, because of WHERE each is allowed to run. DOM events (fullscreenchange,
+// resize) fire on the browser's real main JS thread; -sPROXY_TO_PTHREAD=1 (emscripten.cmake) runs
+// main() -- and the GL context setDisplayMode ultimately touches -- on a SEPARATE worker thread.
+// Calling straight into setDisplayMode from the DOM handler crashes (`unreachable`, confirmed by
+// direct repro): the GL context isn't current on the calling thread. gx_request_render_resolution
+// is trivial and thread-agnostic (stores two ints); gx_apply_pending_render_resolution does the
+// real work and is only ever called from wasm_engine_frame (GameEngine.cpp), which IS the correct
+// worker thread. windowed stays TRUE in the actual apply: SDL_SetWindowSize (the branch above that
+// always runs on wasm) is the one mechanism this needs, applied at a new trigger point, not a
+// request to reopen the native fullscreen path the override above exists to avoid.
+static std::atomic<int> s_pendingResW{0};
+static std::atomic<int> s_pendingResH{0};
+
+extern "C" EMSCRIPTEN_KEEPALIVE
+void gx_request_render_resolution(int width, int height)
+{
+	if (width <= 0 || height <= 0) return;
+	s_pendingResW.store(width, std::memory_order_relaxed);
+	s_pendingResH.store(height, std::memory_order_relaxed);
+}
+
+extern "C" void gx_apply_pending_render_resolution()
+{
+	int width = s_pendingResW.exchange(0, std::memory_order_relaxed);
+	int height = s_pendingResH.exchange(0, std::memory_order_relaxed);
+	if (width == 0 || height == 0 || !TheDisplay) return;
+	Int w = clampWidthToAspectBand((Int)width, (Int)height) & ~1;
+	Int h = (Int)height & ~1;
+	if (w == (Int)TheDisplay->getWidth() && h == (Int)TheDisplay->getHeight()) return;  // already there
+	TheDisplay->setDisplayMode(w, h, TheDisplay->getBitDepth(), TRUE);
+}
+#endif
 #endif
 
 // Filtered resolution cache — built once, clamps widths to 4:3..16:9 and deduplicates.
@@ -619,10 +685,7 @@ static void buildFilteredResolutions()
 		Int h = resolutions[i].Height;
 		Int bits = resolutions[i].BitDepth;
 		if (nativeH > 0 && h > nativeH) continue;
-		Int minW = h * 4 / 3;
-		Int maxW = h * 16 / 9;
-		if (w < minW) w = minW;
-		if (w > maxW) w = maxW;
+		w = clampWidthToAspectBand(w, h);
 		bool duplicate = false;
 		for (const auto& e : s_filteredResolutions) {
 			if (e.w == w && e.h == h && e.bits == bits) { duplicate = true; break; }

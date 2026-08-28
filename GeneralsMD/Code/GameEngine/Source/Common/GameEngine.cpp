@@ -31,6 +31,11 @@
 #include <emscripten.h>  // emscripten_set_main_loop for the browser render loop
 #include <exception>     // std::exception in the wasm frame's resilient catch
 #include <dx8wasm/telemetry.h>
+// W3DDisplay.cpp: applies a fullscreen resolution request queued by web/game-keys.js. Must run
+// from THIS thread (the PROXY_TO_PTHREAD worker main() lives on, where the GL context is
+// current) -- calling the equivalent logic straight from the DOM event handler that queues the
+// request crashes, since that handler runs on the browser's separate main JS thread.
+extern "C" void gx_apply_pending_render_resolution();
 // GeneralsX @build dx8wasm — per-frame timing for the web build. Two spans plus one
 // gauge a frame at 60 FPS is 180 ring records/second against a 1024-record ring
 // drained at 1 Hz: fits with headroom, and dx8wasm_tel_dropped() reports it if it
@@ -1319,6 +1324,7 @@ static void wasm_stress_spawn()
 static void wasm_engine_frame()
 {
 	if (!TheGameEngine || TheGameEngine->getQuitting()) { emscripten_cancel_main_loop(); return; }
+	gx_apply_pending_render_resolution();
 	wasm_stress_spawn();
 	double pf_t0 = emscripten_get_now();
 	// A single frame's exception must NOT kill the whole game. The old code called
