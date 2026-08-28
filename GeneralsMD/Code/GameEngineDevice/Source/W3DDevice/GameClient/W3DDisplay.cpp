@@ -2534,6 +2534,11 @@ AGAIN:
 				// Always-on FPS readout on the web (drawFPSStats is RTS_DEBUG-only, and the
 				// Release build the user runs has no debug stat display). Self-contained so it
 				// works without the debug-display plumbing. Top-left, yellow with a black drop.
+				// Only when the HUD's own render-fps display (InGameUI::drawRenderFps, on by default
+				// via RenderFpsFontSize) is off: both sat at the top-left corner and the two counters
+				// drew over each other -- "64 [30] 15:47:29" with a bigger "FPS 67" across it
+				// (screenshot, 2026-08-28). One fps readout is enough; the HUD one also shows the cap.
+				if (TheGlobalData->m_renderFpsFontSize <= 0)
 				{
 					static DisplayString *s_fps = nullptr;
 					if (s_fps == nullptr)
