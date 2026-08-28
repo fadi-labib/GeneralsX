@@ -38,6 +38,10 @@
 #include <unistd.h>   // _exit()
 #include <glob.h>     // glob() for Vulkan ICD discovery
 #ifdef __EMSCRIPTEN__
+// W3DDisplay.cpp: the one clamp a viewport goes through to become a render resolution (band + floor).
+extern "C" void gx_clamp_render_resolution(int *width, int *height);
+#endif
+#ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
 
@@ -352,7 +356,7 @@ int main(int argc, char* argv[])
 				try { var o = parseFloat(new URLSearchParams(location.search).get('dpr')); if (o > 0) dpr = o; } catch (e) {}
 				return Math.round(window.innerHeight * dpr);
 			});
-			if (vpW >= 640 && vpH >= 480) SDL_SetWindowSize(TheSDL3Window, vpW, vpH);
+			// (the canvas is sized below, once the clamp has been applied)
 
 			bool userSetRes = false;
 			for (int i = 1; i < __argc; ++i)
@@ -365,7 +369,14 @@ int main(int argc, char* argv[])
 			// non-1024x768 backbuffer that (before the d3d8.cpp adapter-mode fix) degraded to
 			// 16-bit and stripped texture alpha. -xres/-yres = the full canvas; d3d8.cpp
 			// enumerates this exact size as a 32-bit mode, so the backbuffer stays 32-bit.
+			// Same clamp every later resolution change goes through (W3DDisplay.cpp): the 4:3..16:9
+			// band and the engine floor. Without it a 21:9 screen booted at 21:9 and snapped to 16:9
+			// on the first resize.
 			int winW = vpW, winH = vpH;
+			if (winW >= 640 && winH >= 480) {
+				gx_clamp_render_resolution(&winW, &winH);
+				SDL_SetWindowSize(TheSDL3Window, winW, winH);
+			}
 			if (!userSetRes && winW >= 640 && winH >= 480) {
 				static char xv[16], yv[16], xf[] = "-xres", yf[] = "-yres";
 				static char* nargv[64];

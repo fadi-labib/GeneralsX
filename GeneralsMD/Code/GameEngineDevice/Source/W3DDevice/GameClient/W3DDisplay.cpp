@@ -657,6 +657,18 @@ static void SDL3_ApplyWindowModeForRenderConfig(Bool windowed, Int renderWidth, 
 // Options-menu sequence, which is what repositions already-built menu screens. In a real match:
 // only the HUD is rebuilt (with the match-start setup), and the shell rebuild is deferred until
 // the shell game is back -- its screens are hidden meanwhile, so nothing stale is ever shown.
+// The one rule for what a viewport becomes as a render resolution: the engine floor
+// (DEFAULT_DISPLAY_WIDTH x DEFAULT_DISPLAY_HEIGHT -- isResolutionSupported), even dimensions, and the
+// width inside the 4:3..16:9 band. Shared with SDL3Main.cpp's boot path (extern "C" so it needs no
+// header): the boot used to pass the raw viewport as -xres/-yres, so a 21:9 screen booted at 21:9 and
+// snapped to 16:9 on the first resize (user report, 2026-08-28).
+extern "C" void gx_clamp_render_resolution(int *width, int *height)
+{
+	if (*height < DEFAULT_DISPLAY_HEIGHT) *height = DEFAULT_DISPLAY_HEIGHT;
+	*height &= ~1;
+	*width = clampWidthToAspectBand(*width, *height) & ~1;
+}
+
 static std::atomic<int> s_pendingResW{0};
 static std::atomic<int> s_pendingResH{0};
 static Bool s_shellLayoutsStale = FALSE;   // the shell screens were built at a resolution other than the current one
@@ -743,6 +755,27 @@ static void gx_rebuildShellForResolution()
 	}
 }
 
+// QuitMenu.cpp builds the ESC menu (QuitMenu.wnd / QuitNoSave.wnd) on first use and caches it in
+// file statics for the rest of the session, so after a mid-match resolution change it opens at the
+// old geometry (user report: "the esc menu is misplaced"). destroyQuitMenu() drops the cache; the
+// next ESC rebuilds it at the current resolution. Its open/close transition groups are removed
+// first -- they bind window pointers (see gx_shellRebuildSafeNow) and the close animation may still
+// be running if the player dismissed the menu moments before resizing. If the menu is showing, it
+// is reopened so the player sees it move rather than vanish; ToggleQuitMenu() re-pauses the game.
+static void gx_rebuildQuitMenu()
+{
+	if (!TheInGameUI) return;
+	const Bool wasShowing = TheInGameUI->isQuitMenuVisible();
+	if (TheTransitionHandler) {
+		TheTransitionHandler->remove("QuitFull");
+		TheTransitionHandler->remove("QuitFullBack");
+		TheTransitionHandler->remove("QuitNoSave");
+		TheTransitionHandler->remove("QuitNoSaveBack");
+	}
+	destroyQuitMenu();
+	if (wasShowing) ToggleQuitMenu();
+}
+
 // Mid-match: rebuild the HUD the way GameLogic::startNewGame sets it up, leave the shell alone.
 static void gx_rebuildHudForResolution()
 {
@@ -775,6 +808,7 @@ static void gx_rebuildHudForResolution()
 	Bool optionsWasShowing = FALSE;
 	gx_dropCachedOptionsLayout(&optionsWasShowing);   // the ESC menu's Options popup, if it was ever opened this match
 	gx_reopenOptionsLayout(optionsWasShowing);
+	gx_rebuildQuitMenu();
 	if (TheTacticalView) {
 		// Limits only. Never touch zoom or position mid-match: that would yank the player's camera.
 		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
@@ -853,9 +887,8 @@ extern "C" void gx_apply_pending_render_resolution()
 	int width = s_pendingResW.exchange(0, std::memory_order_relaxed);
 	int height = s_pendingResH.exchange(0, std::memory_order_relaxed);
 	if (width == 0 || height == 0 || !TheDisplay) return;
-	if (height < DEFAULT_DISPLAY_HEIGHT) height = DEFAULT_DISPLAY_HEIGHT;   // the engine floor is DEFAULT_DISPLAY_WIDTH x DEFAULT_DISPLAY_HEIGHT (isResolutionSupported); the page CSS-scales the canvas down
-	Int h = (Int)height & ~1;
-	Int w = clampWidthToAspectBand((Int)width, h) & ~1;
+	gx_clamp_render_resolution(&width, &height);   // the page CSS-scales whatever this yields into the viewport
+	Int w = (Int)width, h = (Int)height;
 	if (w == (Int)TheDisplay->getWidth() && h == (Int)TheDisplay->getHeight()) {
 		gx_syncCanvasBackingTo(w, h);
 		return;
