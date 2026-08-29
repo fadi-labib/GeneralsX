@@ -1601,6 +1601,14 @@ bool DX8Wrapper::Set_Device_Resolution(int width,int height,int bits,int windowe
 
 		if (width != -1) ResolutionWidth = width;
 		if (height != -1) ResolutionHeight = height;
+		// Honour the requested windowed flag, like Set_Render_Device does. Without this IsWindowed
+		// keeps its boot value for the whole session; on the web that is fullscreen(0), so every
+		// resolution change resolved the backbuffer from the CURRENT (pre-resize) canvas size for one
+		// frame -- a wrong pillarbox rect and mouse-to-viewport mapping until the next frame's
+		// Pillarbox_Process_Resize self-heals it. The web always renders windowed (the canvas IS the
+		// window; SDL3_ApplyWindowModeForRenderConfig forces it at the SDL layer), so this makes the
+		// backbuffer track the requested resolution directly and the pillarbox stays inert.
+		if (windowed != -1) { IsWindowed = (windowed != 0); DX8Wrapper_IsWindowed = IsWindowed; }
 
 		if (resize_window)
 		{
@@ -1616,7 +1624,7 @@ bool DX8Wrapper::Set_Device_Resolution(int width,int height,int bits,int windowe
 
 		// Release pillarbox RT before device reset
 		Pillarbox_Cleanup();
-#pragma message("TODO: support changing windowed status and changing the bit depth")
+#pragma message("TODO: support changing the bit depth (windowed status now tracked above)")
 		WWDEBUG_SAY(("DX8Wrapper::Set_Device_Resolution is resetting the device."));
 		bool ok = Reset_Device();
 		if (ok) Pillarbox_Setup(ResolutionWidth, ResolutionHeight);
