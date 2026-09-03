@@ -763,6 +763,17 @@ static void gx_rebuildShellForResolution()
 // first -- they bind window pointers (see gx_shellRebuildSafeNow) and the close animation may still
 // be running if the player dismissed the menu moments before resizing. If the menu is showing, it
 // is reopened so the player sees it move rather than vanish; ToggleQuitMenu() re-pauses the game.
+//
+// destroyQuitMenu() leaves the match PAUSED (ToggleQuitMenu's open path paused it; only its close
+// path and HideQuitMenu unpause), so the reopen below is load-bearing -- and ToggleQuitMenu() has two
+// early returns that skip it: an Options layout on screen (it closes that instead: "quit out of them
+// rather than toggle") and canOpenQuitMenu() == FALSE, which is the case whenever the SDL window has
+// lost focus (TheGameEngine->isActive(); DevTools docked next to the game does exactly that, and
+// docking is itself the resize that brings us here). Either way the player was left with no menu, the
+// game paused and input disabled -- every click dead, the hardware cursor still moving: OPEN-ITEMS
+// §0o, reproduced 2026-09-03 by web-runtime/esc-options-input-test.mjs (scenario B). So: reopen with
+// no Options layout present (gx_rebuildHudForResolution orders it so), and if the menu still did not
+// come back, unpause -- a playable match with no menu beats a frozen one, and ESC reopens the menu.
 static void gx_rebuildQuitMenu()
 {
 	if (!TheInGameUI) return;
@@ -774,7 +785,12 @@ static void gx_rebuildQuitMenu()
 		TheTransitionHandler->remove("QuitNoSaveBack");
 	}
 	destroyQuitMenu();
-	if (wasShowing) ToggleQuitMenu();
+	if (!wasShowing) return;
+	ToggleQuitMenu();
+	if (!TheInGameUI->isQuitMenuVisible()) {
+		fprintf(stderr, "WARNING: gx_rebuildQuitMenu: the ESC menu could not be reopened after the resize (window inactive?); unpausing so the match stays playable\n");
+		if (TheGameLogic && !TheGameLogic->isInMultiplayerGame()) TheGameLogic->setGamePaused(FALSE);
+	}
 }
 
 // Mid-match: rebuild the HUD the way GameLogic::startNewGame sets it up, leave the shell alone.
@@ -806,10 +822,14 @@ static void gx_rebuildHudForResolution()
 			GadgetStaticTextSetText(moneyWin, buffer);
 		}
 	}
+	// Order matters: the ESC menu first, Options (which the player opened FROM it) back on top after.
+	// Reopening Options first made ToggleQuitMenu() close it and return without reopening the ESC
+	// menu -- see gx_rebuildQuitMenu. And Options only comes back if the ESC menu did: an Options
+	// popup over a menu-less, unpaused match would be a stranger state than no popup at all.
 	Bool optionsWasShowing = FALSE;
 	gx_dropCachedOptionsLayout(&optionsWasShowing);   // the ESC menu's Options popup, if it was ever opened this match
-	gx_reopenOptionsLayout(optionsWasShowing);
 	gx_rebuildQuitMenu();
+	gx_reopenOptionsLayout(optionsWasShowing && TheInGameUI && TheInGameUI->isQuitMenuVisible());
 	if (TheTacticalView) {
 		// Limits only. Never touch zoom or position mid-match: that would yank the player's camera.
 		TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
