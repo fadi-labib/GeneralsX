@@ -43,6 +43,9 @@
 #include "GameClient/WindowLayout.h"
 #include "GameClient/Gadget.h"
 #include "GameClient/GameWindowGlobal.h"
+#ifdef __EMSCRIPTEN__
+#include <dx8wasm/telemetry.h>   // input-loss diagnosis counters + the modal/captor introspection below
+#endif
 #include "GameClient/GadgetListBox.h"
 #include "GameClient/GadgetComboBox.h"
 #include "GameClient/GadgetTabControl.h"
@@ -844,6 +847,13 @@ WinInputReturnCode GameWindowManager::winProcessMouseEvent( GameWindowMessage ms
 	// pack mouse coords into one entity for message passing
 	packedMouseCoords = SHORTTOLONG( mousePos->x, mousePos->y );
 
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - input-loss diagnosis (OPEN-ITEMS §0o): second hop. A left press that
+	// arrived here but is then reported USED never reaches the world (SelectionTranslator); one
+	// reported NOT_USED did. Together with input.sdl_left_down this brackets where a click died.
+	if( msg == GWM_LEFT_DOWN ) dx8wasm_tel_counter("input.wm_left_down", 1);
+#endif
+
 	// clear tooltip ... it will be reset if necessary
 	TheMouse->setCursorTooltip( UnicodeString::TheEmptyString );
 
@@ -1174,8 +1184,31 @@ WinInputReturnCode GameWindowManager::winProcessMouseEvent( GameWindowMessage ms
 
 	}
 
+#ifdef __EMSCRIPTEN__
+	if( msg == GWM_LEFT_DOWN && returnCode == WIN_INPUT_USED ) dx8wasm_tel_counter("input.wm_left_down_used", 1);
+#endif
+
 	return returnCode;
 
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Introspection for the input-loss diagnosis: the window the modal stack routes every mouse event
+	* to, and whether a window is still a live root window (a modal entry whose window was destroyed
+	* while NOT at the top of the stack is never popped -- winDestroy/processDestroyList only check
+	* the head -- and would route every click into freed memory). */
+//-------------------------------------------------------------------------------------------------
+GameWindow *GameWindowManager::winGetModalWindow()
+{
+	return m_modalHead ? m_modalHead->window : nullptr;
+}
+
+Bool GameWindowManager::winIsRootWindow( const GameWindow *window )
+{
+	for( GameWindow *w = m_windowList; w; w = w->winGetNext() )
+		if( w == window )
+			return TRUE;
+	return FALSE;
 }
 
 bool GameWindowManager::isMouseWithinWindow(GameWindow* window, const ICoord2D* mousePos, unsigned int requiredStatusMask, unsigned int forbiddenStatusMask)
@@ -1510,6 +1543,9 @@ Int GameWindowManager::winSetModal( GameWindow *window )
 	if( window->m_parent != nullptr )
 	{
 		DEBUG_LOG(( "WinSetModal: Non Root window attempted to go modal." ));
+#ifdef __EMSCRIPTEN__
+		fprintf(stderr, "[gxwm] winSetModal REFUSED non-root id=%d\n", window->winGetWindowId());
+#endif
 		return WIN_ERR_INVALID_PARAMETER;			// return error if not
 	}
 	// Allocate new Modal Window Entry
@@ -1524,6 +1560,9 @@ Int GameWindowManager::winSetModal( GameWindow *window )
 	modal->window = window;
 	modal->next = m_modalHead;
 	m_modalHead = modal;
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[gxwm] winSetModal id=%d depth=%d\n", window->winGetWindowId(), [&]{ int d = 0; for (ModalWindow *m = m_modalHead; m; m = m->next) ++d; return d; }());
+#endif
 
 	return WIN_ERR_OK;
 
@@ -1547,6 +1586,9 @@ Int GameWindowManager::winUnsetModal( GameWindow *window )
 		// return error if not
 		DEBUG_LOG(( "WinUnsetModal: Invalid window attempting to unset modal (%d)",
 								window->winGetWindowId() ));
+#ifdef __EMSCRIPTEN__
+		fprintf(stderr, "[gxwm] winUnsetModal REFUSED id=%d (head=%d)\n", window->winGetWindowId(), m_modalHead ? m_modalHead->window->winGetWindowId() : -1);
+#endif
 		return WIN_ERR_GENERAL_FAILURE;
 
 	}
@@ -1555,6 +1597,9 @@ Int GameWindowManager::winUnsetModal( GameWindow *window )
 	next = m_modalHead->next;
 	deleteInstance(m_modalHead);
 	m_modalHead = next;
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[gxwm] winUnsetModal id=%d remaining=%d\n", window->winGetWindowId(), [&]{ int d = 0; for (ModalWindow *m = m_modalHead; m; m = m->next) ++d; return d; }());
+#endif
 
 	return WIN_ERR_OK;
 

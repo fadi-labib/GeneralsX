@@ -912,6 +912,28 @@ GxFrameEnd::~GxFrameEnd()
 	dx8wasm_tel_gauge("client.accounted_ms",
 		(g_cInput + g_cWindow + g_cVideo + g_cDrawables + g_cTerrain +
 		 g_cDispUpd + g_cDispDraw + g_cStrings + g_cShell + g_cUI) / n);
+	// Input-loss diagnosis (OPEN-ITEMS §0o): the GUI/engine state that decides whether a click can do
+	// anything, sampled with the frame gauges so a capture of "the mouse does nothing" carries it.
+	//   gui.modal: 0 none, 1 a live root window, 2 an entry whose window is no longer a root window
+	//   (destroyed while NOT at the top of the modal stack: winDestroy/processDestroyList only check
+	//   the head, so such an entry is never popped and every mouse event would route into it).
+	if (TheWindowManager) {
+		GameWindow *modal = TheWindowManager->winGetModalWindow();
+		dx8wasm_tel_gauge("gui.modal", modal ? (TheWindowManager->winIsRootWindow(modal) ? 1.0 : 2.0) : 0.0);
+		dx8wasm_tel_gauge("gui.captor", TheWindowManager->winGetCapture() ? 1.0 : 0.0);
+		dx8wasm_tel_gauge("gui.grab", TheWindowManager->winGetGrabWindow() ? 1.0 : 0.0);
+		dx8wasm_tel_gauge("gui.kbd_focus", TheWindowManager->winGetFocus() ? 1.0 : 0.0);
+	}
+	if (TheShell) {
+		WindowLayout *opt = TheShell->getOptionsLayout(FALSE);
+		dx8wasm_tel_gauge("gui.options_open", (opt && !opt->isHidden()) ? 1.0 : 0.0);
+	}
+	if (TheInGameUI) {
+		dx8wasm_tel_gauge("gui.quit_menu_visible", TheInGameUI->isQuitMenuVisible() ? 1.0 : 0.0);   // SelectionTranslator drops every left click while this is set
+		dx8wasm_tel_gauge("gui.input_enabled", TheInGameUI->getInputEnabled() ? 1.0 : 0.0);
+	}
+	if (TheGameLogic) dx8wasm_tel_gauge("logic.paused", TheGameLogic->isGamePaused() ? 1.0 : 0.0);
+	if (TheGameEngine) dx8wasm_tel_gauge("engine.active", TheGameEngine->isActive() ? 1.0 : 0.0);   // SDL window focus; canOpenQuitMenu() needs it
 	g_cAccFrames = 0.0;
 	g_cInput = g_cWindow = g_cVideo = g_cDrawables = g_cTerrain = 0.0;
 	g_cDispUpd = g_cDispDraw = g_cStrings = g_cShell = g_cUI = 0.0;

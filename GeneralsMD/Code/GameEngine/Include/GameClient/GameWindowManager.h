@@ -276,6 +276,8 @@ public:
 	virtual Int winCapture( GameWindow *window );  ///< captures the mouse
 	virtual Int winRelease( GameWindow *window );  ///< release mouse capture
 	virtual GameWindow *winGetCapture();  ///< current mouse capture settings
+	GameWindow *winGetModalWindow();  ///< window at the top of the modal stack (nullptr if none); diagnosis only
+	Bool winIsRootWindow( const GameWindow *window );  ///< is this pointer still a live top-level window? diagnosis only
 
 	virtual Int winSetModal( GameWindow *window );  ///< put at top of modal stack
 	virtual Int winUnsetModal( GameWindow *window );  /**< take window off modal stack, if window is

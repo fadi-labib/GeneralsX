@@ -1105,6 +1105,13 @@ void SDL3Mouse::addSDLEvent(SDL_Event *event)
 		return;
 	}
 
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - input-loss diagnosis (OPEN-ITEMS §0o): the first hop a click takes.
+	// Paired with input.wm_left_down / input.wm_left_down_used (GameWindowManager) and the
+	// per-second gui.* gauges (GameClient) so a "mouse does nothing" report says WHICH hop dropped it.
+	if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
+		dx8wasm_tel_counter("input.sdl_left_down", 1);
+#endif
 	// Copy entire event to buffer
 	m_eventBuffer[m_nextFreeIndex] = *event;
 

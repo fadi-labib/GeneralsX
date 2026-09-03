@@ -112,6 +112,9 @@ static void initGadgetsNoSaveQuit()
 
 void destroyQuitMenu()
 {
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, "[gxquit] destroyQuitMenu isVisible=%d paused=%d\n", (int)isVisible, (int)(TheGameLogic && TheGameLogic->isGamePaused()));
+#endif
   // destroy the quit menu
 	quitConfirmationWindow = nullptr;
 	if(fullQuitMenuLayout)
@@ -267,6 +270,14 @@ Bool canOpenQuitMenu()
 //-------------------------------------------------------------------------------------------------
 void ToggleQuitMenu()
 {
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - input-loss diagnosis (OPEN-ITEMS §0o): every toggle, with the state
+	// that decides its branch. Cheap (a key press), and it is the one call whose early returns can
+	// leave the match paused with no menu on screen.
+	fprintf(stderr, "[gxquit] ToggleQuitMenu isVisible=%d canOpen=%d optionsLayout=%d quitVisFlag=%d paused=%d\n",
+		(int)isVisible, (int)canOpenQuitMenu(), (int)(TheShell && TheShell->getOptionsLayout(FALSE) != nullptr),
+		(int)(TheInGameUI && TheInGameUI->isQuitMenuVisible()), (int)(TheGameLogic && TheGameLogic->isGamePaused()));
+#endif
 	if (!isVisible && !canOpenQuitMenu())
 		return;
 
