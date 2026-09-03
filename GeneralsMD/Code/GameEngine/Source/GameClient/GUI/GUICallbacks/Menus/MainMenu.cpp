@@ -440,7 +440,11 @@ static void initLabelVersion()
 	NameKeyType versionID = TheNameKeyGenerator->nameToKey( "MainMenu.wnd:LabelVersion" );
 	GameWindow *labelVersion = TheWindowManager->winGetWindowFromId( nullptr, versionID );
 	UnicodeString creditText;
+#ifdef __EMSCRIPTEN__
+	creditText.translate(GX_WEB_CREDIT);   // GeneralsX @build dx8wasm - set per deployment in cmake/emscripten.cmake
+#else
 	creditText.translate("GeneralsX - Multiplatform C&C Generals");
+#endif
 
 	if (labelVersion)
 	{

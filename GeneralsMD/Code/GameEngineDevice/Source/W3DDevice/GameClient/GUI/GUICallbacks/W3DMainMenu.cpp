@@ -417,7 +417,11 @@ void W3DGeneralsXCreditDraw( GameWindow *window, WinInstanceData *instData )
 		return;
 
 	UnicodeString ucredit;
+#ifdef __EMSCRIPTEN__
+	ucredit.translate(GX_WEB_CREDIT);   // GeneralsX @build dx8wasm - set per deployment in cmake/emscripten.cmake
+#else
 	ucredit.translate("GeneralsX - Multiplatform C&C Generals");
+#endif
 	instData->setText(ucredit);
 
 	DisplayString *dString = instData->getTextDisplayString();

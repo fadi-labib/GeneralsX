@@ -62,6 +62,18 @@ add_compile_options(-pthread)
 # So: keep this large on desktop because it is free there, but do not treat it as the mobile
 # blocker. Measure a candidate with:
 #   emcmake cmake ... -DGX_HEAP_MB=1024      # link-only change, ~15 s to re-link
+# Deployment-specific strings a hosting site sets from its build script (generals-dx8wasm's
+# scripts/build-engine.sh does). Defaults are true of any web build, so the engine branch itself
+# stays free of anyone's domain.
+#   GX_WEB_CREDIT         the main-menu credit line (replaces "GeneralsX - Multiplatform C&C Generals")
+#   GX_WEB_DEFAULT_PLAYER the player name skirmish/LAN lobbies start with when none is saved yet;
+#                         the desktop build uses the machine name, which on Emscripten is the
+#                         hard-coded hostname "emscripten"
+set(GX_WEB_CREDIT "GeneralsX for the Web" CACHE STRING "Main-menu credit line on the web build")
+set(GX_WEB_DEFAULT_PLAYER "Commander" CACHE STRING "Default player name on the web build (no saved name yet)")
+add_compile_definitions(GX_WEB_CREDIT="${GX_WEB_CREDIT}" GX_WEB_DEFAULT_PLAYER="${GX_WEB_DEFAULT_PLAYER}")
+message(STATUS "GeneralsX: web credit '${GX_WEB_CREDIT}', default player '${GX_WEB_DEFAULT_PLAYER}'")
+
 set(GX_HEAP_MB "3584" CACHE STRING "Fixed wasm heap size in MB (fixed, non-growable; need NOT exceed the asset bundle)")
 math(EXPR GX_HEAP_BYTES "${GX_HEAP_MB} * 1024 * 1024")
 message(STATUS "GeneralsX: fixed wasm heap = ${GX_HEAP_MB} MB")

@@ -118,8 +118,12 @@ UnicodeString LANPreferences::getUserName()
 	}
 
 	// Use machine name as default user name.
+#ifdef __EMSCRIPTEN__
+	ret.translate(GX_WEB_DEFAULT_PLAYER);   // GeneralsX @build dx8wasm - the machine name here is Emscripten's hard-coded hostname "emscripten"
+#else
 	IPEnumeration IPs;
 	ret.translate(IPs.getMachineName());
+#endif
 	return ret;
 }
 

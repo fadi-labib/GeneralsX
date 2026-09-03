@@ -205,8 +205,12 @@ UnicodeString SkirmishPreferences::getUserName()
 	SkirmishPreferences::const_iterator it = find("UserName");
 	if (it == end())
 	{
+#ifdef __EMSCRIPTEN__
+		ret.translate(GX_WEB_DEFAULT_PLAYER);   // GeneralsX @build dx8wasm - the machine name here is Emscripten's hard-coded hostname "emscripten"
+#else
 		IPEnumeration IPs;
 		ret.translate(IPs.getMachineName());
+#endif
 		return ret;
 	}
 
@@ -214,8 +218,12 @@ UnicodeString SkirmishPreferences::getUserName()
 	ret.trim();
 	if (ret.isEmpty())
 	{
+#ifdef __EMSCRIPTEN__
+		ret.translate(GX_WEB_DEFAULT_PLAYER);
+#else
 		IPEnumeration IPs;
 		ret.translate(IPs.getMachineName());
+#endif
 		return ret;
 	}
 
