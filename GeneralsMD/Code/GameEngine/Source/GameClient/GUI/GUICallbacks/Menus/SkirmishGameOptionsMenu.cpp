@@ -216,6 +216,13 @@ UnicodeString SkirmishPreferences::getUserName()
 
 	ret = QuotedPrintableToUnicodeString(it->second);
 	ret.trim();
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @build dx8wasm - a SAVED "emscripten" is not a name anyone chose: it is the hostname
+	// the fallback below used to seed the slot with, which SkirmishPreferences::write() then
+	// persisted on every lobby exit. Treat it as unset so existing profiles pick up the default too.
+	if (ret.compareNoCase(L"emscripten") == 0)
+		ret.clear();
+#endif
 	if (ret.isEmpty())
 	{
 #ifdef __EMSCRIPTEN__

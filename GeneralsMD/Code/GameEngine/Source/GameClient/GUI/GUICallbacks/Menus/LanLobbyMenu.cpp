@@ -103,6 +103,12 @@ UnicodeString LANPreferences::getUserName()
 		// Found an user name. Use it if valid.
 		ret = QuotedPrintableToUnicodeString(it->second);
 		ret.trim();
+#ifdef __EMSCRIPTEN__
+		// GeneralsX @build dx8wasm - a saved "emscripten" is the old hostname default, not a choice;
+		// treat it as unset so the GX_WEB_DEFAULT_PLAYER fallback below applies (see SkirmishPreferences).
+		if (ret.compareNoCase(L"emscripten") == 0)
+			ret.clear();
+#endif
 		if (!ret.isEmpty())
 		{
 			return ret;
