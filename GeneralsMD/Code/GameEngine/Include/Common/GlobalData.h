@@ -362,6 +362,7 @@ public:
 	Bool m_wasmSkirmishOnly;				///< -skirmishonly: skirmish-only build. Hides campaign/Challenge/Load/Replay and forces cinematics off; Skirmish, LAN and Options stay.
 	Int m_wasmAIDifficulty;					///< -aidifficulty easy|medium|hard: wasm -file skirmish AI level (0=easy,1=med,2=hard/brutal; -1=default easy)
 	Bool m_wasmSlowmoSkirmish;				///< -slowmo: wasm -file skirmish scales down logic time (via FramePacer) so a slow external strategist loop can keep up. Opt-in only; off by default.
+	Bool m_wasmControlBridge;				///< -control: create the LLM-general ControlBridge and drain the /control channel each frame. Implied by -bridge. Off by default, so a normal game never pays for it.
 	Bool m_wasmBridgeSkirmish;				///< -bridge: LLM-general MCP opt-in. Bundles slow-mo and marks the boot as bridge-driven (the ControlBridge binds itself to the knob-having skirmish AI). Opt-in only; off by default.
 	AsciiString m_wasmBridgeSide;			///< Task 4.3: side (faction) of the skirmish AI the ControlBridge must bind to. With two skirmish AIs in the bridge match (bridge AI + fighting opponent), this makes the binding deterministic: tick() binds only to the build-list owner whose getSide() matches this. Empty => legacy "first build-list owner" behavior.
 

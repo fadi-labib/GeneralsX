@@ -1393,9 +1393,13 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	// LLM-general control bridge (Task 1.1): waypoints + polygon triggers are
 	// loaded as part of the map data above, so this is the earliest point at
-	// which region derivation can see real map content.
-	if (!TheControlBridge) TheControlBridge = new ControlBridge();
-	TheControlBridge->init();
+	// which region derivation can see real map content. Opt-in (-control / -bridge):
+	// without it no bridge exists and the per-frame tick never runs.
+	if (TheGlobalData->m_wasmControlBridge)
+	{
+		if (!TheControlBridge) TheControlBridge = new ControlBridge();
+		TheControlBridge->init();
+	}
 
 	// update the loadscreen
 	updateLoadProgress(LOAD_PROGRESS_POST_LOAD_MAP);

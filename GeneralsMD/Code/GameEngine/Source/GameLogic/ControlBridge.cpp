@@ -182,6 +182,10 @@ void scoutUnitCb(Object* obj, void* ud)
 
 void ControlBridge::init()
 {
+  // init() runs for every map load (shell map, then each match), and the bridge object
+  // outlives them. Forget the previous game's binding, or tick() never rebinds and every
+  // op keeps acting on a player index from the last match.
+  m_bridgePlayerIndex = -1;
   m_regions.clear();
   for (Waypoint *w = TheTerrainLogic ? TheTerrainLogic->getFirstWaypoint() : NULL;
        w; w = w->getNext()) {
@@ -590,14 +594,14 @@ void ControlBridge::tick()
 #ifdef __EMSCRIPTEN__
   // Drain at most one queued control request per frame. gxControl.poll() copies
   // the next request into our stack buffer and returns its byte length (0 =
-  // none). v1 ops are tiny JSON; 8192 comfortably exceeds any request (the
-  // browser poll() drops anything larger, so this must stay ample).
+  // none). v1 ops are tiny JSON; 8192 comfortably exceeds any request. We offer
+  // one byte less than the buffer so the terminator always fits; poll() answers
+  // an oversized request with an error reply itself and returns 0.
   char buf[8192];
   Int n = MAIN_THREAD_EM_ASM_INT(
     { return (typeof gxControl !== 'undefined') ? gxControl.poll($0, $1) : 0; },
-    (Int)buf, (Int)sizeof(buf));
-  if (n <= 0) return;
-  if (n >= (Int)sizeof(buf)) n = (Int)sizeof(buf) - 1;
+    (Int)buf, (Int)sizeof(buf) - 1);
+  if (n <= 0 || n >= (Int)sizeof(buf)) return;
   buf[n] = 0;
 
   Int id = 0;

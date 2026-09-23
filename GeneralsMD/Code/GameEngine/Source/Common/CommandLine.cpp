@@ -790,6 +790,17 @@ Int parseSlowmo(char *args[], int)
 	return 1;
 }
 
+// GeneralsX @build dx8wasm - `-control` creates the LLM-general ControlBridge and lets it
+// drain the /control channel, without the rest of -bridge (no slow-mo, slot 0 stays human).
+// The per-op wire tests use it. Without -control or -bridge no bridge exists at all: its
+// per-frame tick is a synchronous call to the browser main thread, which a normal game
+// must not pay for.
+Int parseControl(char *args[], int)
+{
+	TheWritableGlobalData->m_wasmControlBridge = TRUE;
+	return 1;
+}
+
 // GeneralsX @build dx8wasm - LLM-general MCP bridge opt-in. Bundles the pieces a
 // live LLM strategist session needs so a plain launch stays untouched:
 //  * slow-mo (reuses the -slowmo FramePacer scaling) so a 1-5s LLM round-trip can
@@ -801,6 +812,7 @@ Int parseSlowmo(char *args[], int)
 // Off by default; only set when -bridge is on the command line.
 Int parseBridge(char *args[], int)
 {
+	TheWritableGlobalData->m_wasmControlBridge = TRUE;    // -bridge needs the bridge itself
 	TheWritableGlobalData->m_wasmBridgeSkirmish = TRUE;
 	TheWritableGlobalData->m_wasmSlowmoSkirmish = TRUE;   // slow the sim so a slow LLM loop keeps up
 	return 1;
@@ -1428,6 +1440,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-campaign", parseCampaign },
 	{ "-skirmishonly", parseSkirmishOnly },
 	{ "-slowmo", parseSlowmo },
+	{ "-control", parseControl },
 	{ "-bridge", parseBridge },
 #endif
 

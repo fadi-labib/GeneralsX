@@ -1390,17 +1390,20 @@ static void wasm_engine_frame()
 	if (!TheGameEngine || TheGameEngine->getQuitting()) { emscripten_cancel_main_loop(); return; }
 	gx_apply_pending_render_resolution();
 	wasm_stress_spawn();
-	// LLM-general control bridge: drain the /control WS at render framerate so the
-	// round-trip is responsive (the logic clock is slow headless). tick() is a
-	// no-op until a match is up. This replaces the retired Phase-0 spike call.
-	if (TheControlBridge) TheControlBridge->tick();
 	double pf_t0 = emscripten_get_now();
 	// A single frame's exception must NOT kill the whole game. The old code called
 	// emscripten_cancel_main_loop() here, which permanently tears down the rAF loop
 	// (nulls MainLoop.scheduler) — the game goes black forever with no recovery, e.g.
 	// after a transient hiccup on the first frame back from a backgrounded tab. Log and
 	// skip this frame instead; a transient throw self-recovers next frame.
-	try { TheGameEngine->update(); }
+	try {
+		// LLM-general control bridge (-control / -bridge only; NULL otherwise): drain the
+		// /control WS at render framerate so the round-trip is responsive (the logic clock
+		// is slow headless). Inside the try so a throw from an op skips the frame like any
+		// other. tick() is a no-op until a match is up.
+		if (TheControlBridge) TheControlBridge->tick();
+		TheGameEngine->update();
+	}
 	catch (const std::exception& e) {
 		fprintf(stderr, "[wasm] std::exception in engine update(): %s — skipping frame\n", e.what());
 		return;
