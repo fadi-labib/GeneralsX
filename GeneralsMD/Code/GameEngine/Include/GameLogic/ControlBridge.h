@@ -17,10 +17,8 @@ public:
   const std::vector<BridgeRegion>& regions() const { return m_regions; }
   const BridgeRegion* regionByName(const AsciiString& n) const;
   Int bridgePlayerIndex() const { return m_bridgePlayerIndex; }
-  void setBridgePlayerIndex(Int i) { m_bridgePlayerIndex = i; }
 private:
   std::vector<BridgeRegion> m_regions;
   Int  m_bridgePlayerIndex = -1;
-  Bool m_regionsBuilt = false;
 };
 extern ControlBridge *TheControlBridge;

@@ -197,7 +197,6 @@ void ControlBridge::init()
     t->getCenterPoint(&r.center); r.radius = t->getRadius();
     m_regions.push_back(r);
   }
-  m_regionsBuilt = true;
   fprintf(stderr, "[BRIDGE] %zu regions derived\n", m_regions.size());
   fflush(stderr);
 }
@@ -613,15 +612,22 @@ void ControlBridge::tick()
   // `attack` and `scout` are Phase 3 write-ops routed through apply(); every
   // other op still gets an explicit "not implemented" reply (coverage, never a
   // silent drop).
+  // The request is already off the browser queue, so a throw from an op must still
+  // produce a reply, or the caller waits out its timeout for nothing.
   AsciiString result;
-  if (op == "observe") {
-    Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
-    result = observe(who);
-    if (result.isEmpty()) result = "{}";
-  } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout") {
-    result = apply(op, buf);
-  } else {
-    result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
+  try {
+    if (op == "observe") {
+      Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
+      result = observe(who);
+      if (result.isEmpty()) result = "{}";
+    } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout") {
+      result = apply(op, buf);
+    } else {
+      result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
+    }
+  } catch (...) {
+    fprintf(stderr, "[BRIDGE] exception in op '%s' (id=%d)\n", op.str(), id);
+    result = "{\"accepted\":false,\"reason\":\"exception in bridge op\"}";
   }
 
   // Reply {"id":<id>,"result":<result>}. Built with concat because `result` can
