@@ -635,9 +635,17 @@ void ControlBridge::tick()
   AsciiString result;
   try {
     if (op == "observe") {
-      Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
-      result = observe(who);
-      if (result.isEmpty()) result = "{}";
+      if (m_bridgePlayerIndex < 0) {
+        // Before the bind the only player we could read is index 0, the neutral player. Say so
+        // rather than hand the model someone else's cash, base and fog.
+        AsciiString nr;
+        nr.format("{\"ready\":false,\"reason\":\"bridge player not bound yet\",\"frame\":%u}",
+                  (unsigned)TheGameLogic->getFrame());
+        result = nr;
+      } else {
+        result = observe(m_bridgePlayerIndex);
+        if (result.isEmpty()) result = "{\"ready\":false,\"reason\":\"bound player not found\"}";
+      }
     } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout") {
       result = apply(op, buf);
     } else {
@@ -680,7 +688,7 @@ AsciiString ControlBridge::observe(Int playerIndex)
   AsciiString tmp;
 
   // Top-level + self.
-  tmp.format("{\"frame\":%u,\"speed\":%.2f,\"match\":\"ongoing\",\"self\":{\"faction\":\"",
+  tmp.format("{\"ready\":true,\"frame\":%u,\"speed\":%.2f,\"match\":\"ongoing\",\"self\":{\"faction\":\"",
              (unsigned)TheGameLogic->getFrame(), 1.0f);
   j.concat(tmp);
   jsonEscape(j, me->getSide().str());
