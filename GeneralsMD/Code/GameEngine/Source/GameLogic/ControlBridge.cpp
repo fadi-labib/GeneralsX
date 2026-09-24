@@ -9,6 +9,7 @@
 #include "GameLogic/Module/AIUpdate.h"  // AIUpdateInterface::aiAttackMoveToPosition (attack order)
 #include "GameLogic/Weapon.h"           // NO_MAX_SHOTS_LIMIT
 #include "GameLogic/PartitionManager.h" // ThePartitionManager, getShroudStatusForPlayer, CellShroudStatus
+#include "GameLogic/VictoryConditions.h" // TheVictoryConditions, hasAchievedVictory/hasBeenDefeated (Task 6)
 #include "Common/GameCommon.h"          // CMD_FROM_AI, CELLSHROUD_CLEAR
 #include "Common/GlobalData.h"          // TheGlobalData->m_wasmBridgeSide (Task 4.3)
 #include "Common/Player.h"              // Player, Money, Energy
@@ -723,9 +724,16 @@ AsciiString ControlBridge::observe(Int playerIndex)
   }
   attackers.concat("]");
 
+  // Match result (Task 6): derived from TheVictoryConditions, not a constant.
+  const char* match = "ongoing";
+  if (TheVictoryConditions) {
+    if (TheVictoryConditions->hasAchievedVictory(me)) match = "won";
+    else if (TheVictoryConditions->hasBeenDefeated(me)) match = "lost";
+  }
+
   // Top-level + self.
-  tmp.format("{\"ready\":true,\"frame\":%u,\"speed\":%.2f,\"match\":\"ongoing\",\"self\":{\"faction\":\"",
-             (unsigned)TheGameLogic->getFrame(), 1.0f);
+  tmp.format("{\"ready\":true,\"frame\":%u,\"speed\":%.2f,\"match\":\"%s\",\"self\":{\"faction\":\"",
+             (unsigned)TheGameLogic->getFrame(), 1.0f, match);
   j.concat(tmp);
   jsonEscape(j, me->getSide().str());
   tmp.format("\",\"cash\":%u,\"power\":{\"produced\":%d,\"consumed\":%d,\"surplus\":%d},"
