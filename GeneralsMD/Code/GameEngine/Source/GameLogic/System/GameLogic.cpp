@@ -1394,11 +1394,13 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	// LLM-general control bridge (Task 1.1): waypoints + polygon triggers are
 	// loaded as part of the map data above, so this is the earliest point at
 	// which region derivation can see real map content. Opt-in (-control / -bridge):
-	// without it no bridge exists and the per-frame tick never runs.
+	// without it no bridge exists and the per-frame tick never runs. In a LAN/Internet
+	// match the bridge is created but inert: it writes one peer's state outside the
+	// lockstep command stream, which would desync every other peer.
 	if (TheGlobalData->m_wasmControlBridge)
 	{
 		if (!TheControlBridge) TheControlBridge = new ControlBridge();
-		TheControlBridge->init();
+		TheControlBridge->init(!isInMultiplayerGame());
 	}
 
 	// update the loadscreen

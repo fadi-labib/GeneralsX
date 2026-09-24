@@ -180,8 +180,16 @@ void scoutUnitCb(Object* obj, void* ud)
 
 // ---------------------------------------------------------------------------
 
-void ControlBridge::init()
+void ControlBridge::init(Bool active)
 {
+  // A network match is deterministic lockstep: every peer must apply the same commands in the
+  // same frame. The bridge writes one peer's state directly (build list, team priorities, unit
+  // orders), so in a LAN/Internet game it would desync the match on the first op. Stay inert.
+  m_active = active;
+  if (!m_active) {
+    fprintf(stderr, "[BRIDGE] inactive: multiplayer match (the bridge steers single-machine skirmishes only)\n");
+    fflush(stderr);
+  }
   // init() runs for every map load (shell map, then each match), and the bridge object
   // outlives them. Forget the previous game's binding, or tick() never rebinds and every
   // op keeps acting on a player index from the last match.
@@ -430,14 +438,17 @@ static Bool jsonReadTeamsArrayIn(const char* begin, const char* end,
 // a raw template name (or any substring of one), which resolves directly.
 // ---------------------------------------------------------------------------
 struct LogicalMap { const char* logical; const char* keywords; };  // space-separated keywords
+// Keywords cover all three factions' shipped template names (verified against the packed
+// assets: AmericaPowerPlant/ChinaPowerPlant, GLASupplyStash, GLAArmsDealer, ChinaGattlingCannon
+// (two t's), GLAStingerSite, GLATunnelNetwork, ChinaNuclearMissileLauncher, GLAScudStorm ...).
 static const LogicalMap kLogicalMap[] = {
   { "power_plant",    "PowerPlant ColdFusion Reactor" },
   { "supply_center",  "SupplyCenter SupplyStash SupplyDepot" },
   { "barracks",       "Barracks" },
   { "war_factory",    "WarFactory ArmsDealer" },
   { "airfield",       "Airfield Helipad" },
-  { "defense_turret", "Gatling Stinger Firebase Bunker Patriot Tunnel" },
-  { "superweapon",    "ParticleCannon MissileSilo ScudStorm Nuke" },
+  { "defense_turret", "Gatling Gattling Stinger Firebase Bunker Patriot Tunnel" },
+  { "superweapon",    "ParticleCannon MissileSilo ScudStorm NuclearMissile Nuke" },
 };
 
 // Case-insensitive: does `hay` contain `needle` as a substring?
@@ -493,20 +504,27 @@ static const char* logicalForTemplate(const char* tmpl)
 // faction-agnostic `unit` enum: ranger/missile_defender/crusader_tank/humvee/
 // tomahawk/raptor_jet). set_team_priorities matches these against each
 // TeamTemplateInfo::m_unitsInfo[].unitThingName (the unit types a team is
-// composed of), NOT against build-list structures. Keywords verified against
-// the shipped USA object INI (`strings assets.data`): AmericaInfantryRanger,
-// AmericaInfantryMissileDefender, AmericaTankCrusader, AmericaVehicleHumvee,
-// AmericaVehicleTomahawk, AmericaJetRaptor. Same v1 deferral as kLogicalMap: a
-// full per-faction table is a later task; raw/substring template names still
-// resolve directly via the ciContains fallback.
+// composed of), NOT against build-list structures. The names are USA-flavoured
+// but each row lists the ROLE's template for all three factions, because the
+// bridge player is normally the China AI (and a GLA AI is one -aidifficulty
+// setup away): a USA-only table made every schema-valid set_team_priorities
+// call fail with "no requested units matched any team". Keywords verified
+// against the packed assets (`strings assets.data`): AmericaInfantryRanger,
+// ChinaInfantryRedguard, GLAInfantryRebel, AmericaInfantryMissileDefender,
+// ChinaInfantryTankHunter, GLAInfantryTunnelDefender, AmericaTankCrusader,
+// ChinaTankBattleMaster, GLATankScorpion, AmericaVehicleHumvee,
+// ChinaTankGattling, GLAVehicleTechnical, AmericaVehicleTomahawk,
+// ChinaVehicleInfernoCannon, ChinaVehicleNukeLauncher, GLAVehicleScudLauncher,
+// AmericaJetRaptor, ChinaJetMIG (GLA has no jet: raptor_jet is dropped for GLA).
+// Raw/substring template names still resolve directly via the ciContains fallback.
 // ---------------------------------------------------------------------------
 static const LogicalMap kUnitLogicalMap[] = {
-  { "ranger",           "AmericaInfantryRanger" },
-  { "missile_defender", "MissileDefender" },
-  { "crusader_tank",    "Crusader" },
-  { "humvee",           "Humvee" },
-  { "tomahawk",         "Tomahawk" },
-  { "raptor_jet",       "Raptor" },
+  { "ranger",           "InfantryRanger Redguard InfantryRebel" },
+  { "missile_defender", "MissileDefender TankHunter TunnelDefender" },
+  { "crusader_tank",    "Crusader BattleMaster Scorpion" },
+  { "humvee",           "Humvee TankGattling VehicleTechnical" },
+  { "tomahawk",         "Tomahawk InfernoCannon NukeLauncher ScudLauncher" },
+  { "raptor_jet",       "JetRaptor JetMIG" },
 };
 
 // Does a team's unit-slot template `tmpl` satisfy the requested `req` (a
@@ -535,7 +553,7 @@ static Bool hasProductionTeams(Player* pp)
 
 void ControlBridge::tick()
 {
-  if (!TheGameLogic || !ThePlayerList) return;
+  if (!m_active || !TheGameLogic || !ThePlayerList) return;
 
   // Bind the bridge player once, at match start (Phase 4.2). The design steers
   // an AISkirmishPlayer's knobs, so the bridge player MUST be the "knob-having"

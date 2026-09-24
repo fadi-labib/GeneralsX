@@ -10,7 +10,7 @@ struct BridgeRegion { AsciiString name; Coord3D center; Real radius; };
 class ControlBridge
 {
 public:
-  void init();                       // enumerate regions from the loaded map
+  void init(Bool active = TRUE);     // enumerate regions from the loaded map; active=FALSE (multiplayer) makes tick() inert
   void tick();                       // per-frame; drains the WS command queue (Phase 2)
   AsciiString observe(Int playerIndex);        // spec §4 JSON
   AsciiString apply(const AsciiString& op, const char* requestJson);  // Phase 3 write-ops
@@ -20,5 +20,6 @@ public:
 private:
   std::vector<BridgeRegion> m_regions;
   Int  m_bridgePlayerIndex = -1;
+  Bool m_active = TRUE;
 };
 extern ControlBridge *TheControlBridge;
