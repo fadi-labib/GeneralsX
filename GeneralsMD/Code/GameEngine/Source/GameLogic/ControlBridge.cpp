@@ -7,6 +7,7 @@
 #include "GameLogic/GameLogic.h"        // TheGameLogic
 #include "GameLogic/Object.h"           // Object, getShroudedStatus/getTemplate/isKindOf
 #include "GameLogic/Module/AIUpdate.h"  // AIUpdateInterface::aiAttackMoveToPosition (attack order)
+#include "GameLogic/Module/ProductionUpdate.h" // ProductionUpdateInterface, ProductionEntry (Task 7)
 #include "GameLogic/Weapon.h"           // NO_MAX_SHOTS_LIMIT
 #include "GameLogic/PartitionManager.h" // ThePartitionManager, getShroudStatusForPlayer, CellShroudStatus
 #include "GameLogic/VictoryConditions.h" // TheVictoryConditions, hasAchievedVictory/hasBeenDefeated (Task 6)
@@ -197,6 +198,27 @@ void scoutUnitCb(Object* obj, void* ud)
   if (!(obj->isKindOf(KINDOF_INFANTRY) || obj->isKindOf(KINDOF_VEHICLE))) return;
   if (!obj->getAIUpdateInterface())    return;   // must be commandable
   a->unit = obj;
+}
+
+// Production queue scrape (Task 7): one entry per in-progress unit/upgrade across all of our
+// own objects' ProductionUpdateInterface queues.
+struct ProdAccum { AsciiString json; Int n; };
+void prodCb(Object* obj, void* ud)
+{
+  ProdAccum* a = (ProdAccum*)ud;
+  ProductionUpdateInterface* pu = obj ? obj->getProductionUpdateInterface() : NULL;
+  if (!pu) return;
+  for (const ProductionEntry* e = pu->firstProduction(); e; e = pu->nextProduction(e)) {
+    const Bool isUnit = e->getProductionObject() != NULL;
+    const AsciiString item = isUnit ? e->getProductionObject()->getName()
+                                    : (e->getProductionUpgrade() ? e->getProductionUpgrade()->getUpgradeName() : AsciiString("unknown"));
+    if (a->n++) a->json.concat(',');
+    a->json.concat("{\"factory\":\""); jsonEscape(a->json, obj->getTemplate()->getName().str());
+    a->json.concat("\",\"item\":\""); jsonEscape(a->json, item.str());
+    AsciiString t; t.format("\",\"kind\":\"%s\",\"percent\":%d,\"remaining\":%d}",
+                            isUnit ? "unit" : "upgrade", (Int)e->getPercentComplete(), e->getProductionQuantityRemaining());
+    a->json.concat(t);
+  }
 }
 
 } // anonymous namespace
@@ -758,8 +780,9 @@ AsciiString ControlBridge::observe(Int playerIndex)
   writeCountMap(j, own.unitsByType);
   j.concat(",\"teams\":[]}");
 
-  // production (ProductionUpdate scrape is v2).
-  j.concat(",\"production\":[]");
+  // production (Task 7): scrape each own object's ProductionUpdateInterface queue.
+  ProdAccum pa; pa.n = 0; me->iterateObjects(prodCb, &pa);
+  j.concat(",\"production\":["); j.concat(pa.json); j.concat("]");
 
   // enemy — fog-limited. One entry per enemy player; tallies count ONLY objects
   // currently visible to the observer (see enemyObjectCb's shroud gate).
