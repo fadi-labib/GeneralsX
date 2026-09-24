@@ -881,10 +881,16 @@ AsciiString ControlBridge::observe(Int playerIndex)
   resolveMyStart(me);
   j.concat(",\"map\":{\"regions\":[");
   Bool firstR = TRUE;
-  if (m_myStart >= 0) { j.concat("\"my_base\""); firstR = FALSE; }
-  for (size_t i = 0, e = 1; i < m_starts.size(); ++i) {
-    if ((Int)i == m_myStart) continue;
-    AsciiString a; a.format("%s\"enemy_start_%u\"", firstR ? "" : ",", (unsigned)e++); j.concat(a); firstR = FALSE;
+  // Fix round 1 (Important #1): while m_myStart is unresolved (-1) we don't yet
+  // know which start is ours, so emitting the OTHER starts as "enemy_start_N"
+  // would risk labeling our own base as an enemy's. Emit NO start aliases at
+  // all until my_base resolves; raw region names are unaffected.
+  if (m_myStart >= 0) {
+    j.concat("\"my_base\""); firstR = FALSE;
+    for (size_t i = 0, e = 1; i < m_starts.size(); ++i) {
+      if ((Int)i == m_myStart) continue;
+      AsciiString a; a.format("%s\"enemy_start_%u\"", firstR ? "" : ",", (unsigned)e++); j.concat(a); firstR = FALSE;
+    }
   }
   for (const BridgeRegion& r : m_regions) {
     if (!firstR) j.concat(',');
@@ -1296,6 +1302,9 @@ const BridgeRegion* ControlBridge::regionByName(const AsciiString& n) const
   // of the raw waypoint/trigger lookup.
   if (n == "my_base") return m_myStart >= 0 ? &m_starts[m_myStart] : NULL;
   if (n.startsWith("enemy_start_")) {
+    // Fix round 1 (Important #1): until my_base resolves we don't know which
+    // start is ours, so no start can be safely labeled an enemy's yet.
+    if (m_myStart < 0) return NULL;
     Int want = atoi(n.str() + 12), e = 0;
     for (size_t i = 0; i < m_starts.size(); ++i) {
       if ((Int)i == m_myStart) continue;
