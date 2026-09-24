@@ -17,6 +17,7 @@
 #include "Common/Team.h"                // ObjectIterateFunc, Team
 #include "Common/ThingTemplate.h"       // ThingTemplate::getName
 #include "Common/KindOf.h"              // KINDOF_*
+#include <algorithm>                    // std::sort (threats_near_me ranking, Task 5)
 #include <utility>
 #include <vector>
 #include <list>                         // Player::getPlayerTeams() -> std::list<TeamPrototype*>
@@ -110,7 +111,17 @@ struct EnemyAccum {
   std::vector<CountEntry> structures;   // only currently-visible enemy buildings
   std::vector<CountEntry> army;         // only currently-visible enemy units
   Int visibleObjects;
+  const std::vector<Coord3D>* myStructures;   // our structure positions (Task 5)
+  std::vector<CountEntry> threats;            // visible enemy units within 500 units of ours
 };
+
+// Our own structures' positions, gathered once per observe() so the enemy loop below can
+// test each visible enemy unit's proximity to our base (Task 5's threats_near_me).
+struct StructPosAccum { std::vector<Coord3D> pos; };
+void structPosCb(Object* obj, void* ud)
+{
+  if (obj && obj->isKindOf(KINDOF_STRUCTURE)) ((StructPosAccum*)ud)->pos.push_back(*obj->getPosition());
+}
 
 void enemyObjectCb(Object* obj, void* ud)
 {
@@ -127,6 +138,16 @@ void enemyObjectCb(Object* obj, void* ud)
   if (obj->isKindOf(KINDOF_STRUCTURE)) bumpCount(a->structures, nm);
   else                                 bumpCount(a->army, nm);
   ++a->visibleObjects;
+
+  // threats_near_me: visible, non-structure enemy units within 500 world units (~50 map
+  // cells -- a base's footprint) of ANY of our structures.
+  if (a->myStructures && !obj->isKindOf(KINDOF_STRUCTURE)) {
+    const Coord3D* p = obj->getPosition();
+    for (const Coord3D& s : *a->myStructures) {
+      const Real dx = p->x - s.x, dy = p->y - s.y;
+      if (dx * dx + dy * dy <= 500.0f * 500.0f) { bumpCount(a->threats, nm); break; }
+    }
+  }
 }
 
 // Gather a player's weapon-bearing combat units for `attack` (spec A.4). The
@@ -736,12 +757,14 @@ AsciiString ControlBridge::observe(Int playerIndex)
   // currently visible to the observer (see enemyObjectCb's shroud gate).
   j.concat(",\"enemy\":{\"players\":[");
   Bool firstEnemy = TRUE;
+  StructPosAccum mine; me->iterateObjects(structPosCb, &mine);
   for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
     Player* other = ThePlayerList->getNthPlayer(pi);
     if (!other || other == me) continue;
     if (me->getRelationship(other->getDefaultTeam()) != ENEMIES) continue;
 
     EnemyAccum ea; ea.observerIndex = playerIndex; ea.visibleObjects = 0;
+    ea.myStructures = &mine.pos;
     other->iterateObjects(enemyObjectCb, &ea);
 
     if (!firstEnemy) j.concat(',');
@@ -756,8 +779,16 @@ AsciiString ControlBridge::observe(Int playerIndex)
     writeCountMap(j, ea.structures);
     j.concat(",\"army_seen\":");
     writeCountMap(j, ea.army);
-    tmp.format("},\"visible_objects\":%d,\"threats_near_me\":[]}", ea.visibleObjects);
+    std::sort(ea.threats.begin(), ea.threats.end(),
+              [](const CountEntry& a, const CountEntry& b){ return a.count > b.count; });
+    tmp.format("},\"visible_objects\":%d,\"threats_near_me\":[", ea.visibleObjects);
     j.concat(tmp);
+    for (size_t t = 0; t < ea.threats.size(); ++t) {
+      if (t) j.concat(',');
+      j.concat("{\"type\":\""); jsonEscape(j, ea.threats[t].name.str());
+      AsciiString c; c.format("\",\"count\":%d}", ea.threats[t].count); j.concat(c);
+    }
+    j.concat("]}");
   }
   j.concat("]}");
 
