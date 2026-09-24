@@ -13,6 +13,7 @@
 #include "Common/GlobalData.h"          // TheGlobalData->m_wasmBridgeSide (Task 4.3)
 #include "Common/Player.h"              // Player, Money, Energy
 #include "Common/PlayerList.h"          // ThePlayerList
+#include "Common/ScoreKeeper.h"         // Player::getScoreKeeper() (Task 4)
 #include "Common/Team.h"                // ObjectIterateFunc, Team
 #include "Common/ThingTemplate.h"       // ThingTemplate::getName
 #include "Common/KindOf.h"              // KINDOF_*
@@ -194,6 +195,7 @@ void ControlBridge::init(Bool active)
   // outlives them. Forget the previous game's binding, or tick() never rebinds and every
   // op keeps acting on a player index from the last match.
   m_bridgePlayerIndex = -1;
+  m_haveLastLosses = false;
   m_regions.clear();
   for (Waypoint *w = TheTerrainLogic ? TheTerrainLogic->getFirstWaypoint() : NULL;
        w; w = w->getNext()) {
@@ -687,15 +689,30 @@ AsciiString ControlBridge::observe(Int playerIndex)
 
   AsciiString tmp;
 
+  // Combat state (live match 2026-09-24: the base was dismantled while this said false).
+  const UnsignedInt now = TheGameLogic->getFrame();
+  const UnsignedInt atk = me->getAttackedFrame();
+  const Bool everAttacked = atk != 0;
+  const Real agoSec = everAttacked ? (Real)(now - atk) / LOGICFRAMES_PER_SECOND : -1.0f;
+  const Bool underAttack = everAttacked && agoSec <= 10.0f;
+  AsciiString attackers = "[";
+  for (Int pi = 0, n = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+    if (pi == playerIndex || !me->getAttackedBy(pi)) continue;
+    AsciiString one; one.format("%s%d", n++ ? "," : "", pi); attackers.concat(one);
+  }
+  attackers.concat("]");
+
   // Top-level + self.
   tmp.format("{\"ready\":true,\"frame\":%u,\"speed\":%.2f,\"match\":\"ongoing\",\"self\":{\"faction\":\"",
              (unsigned)TheGameLogic->getFrame(), 1.0f);
   j.concat(tmp);
   jsonEscape(j, me->getSide().str());
   tmp.format("\",\"cash\":%u,\"power\":{\"produced\":%d,\"consumed\":%d,\"surplus\":%d},"
-             "\"under_attack\":false}",
-             (unsigned)cash, produced, consumed, surplus);
+             "\"under_attack\":%s,\"last_attacked_seconds_ago\":",
+             (unsigned)cash, produced, consumed, surplus, underAttack ? "true" : "false");
   j.concat(tmp);
+  if (everAttacked) { tmp.format("%.1f", agoSec); j.concat(tmp); } else j.concat("null");
+  j.concat(",\"attacked_by\":"); j.concat(attackers); j.concat("}");
 
   // economy (income + collector count are real; supply-dock detail is v2).
   tmp.format(",\"economy\":{\"supply_collectors\":%d,\"income_per_min\":%d}",
@@ -743,6 +760,25 @@ AsciiString ControlBridge::observe(Int playerIndex)
     j.concat(tmp);
   }
   j.concat("]}");
+
+  // losses — cumulative + deltas since the last observe (Task 4). Baseline rule: the first
+  // observe after a bind (m_haveLastLosses false) reports deltas equal to the cumulative
+  // values, so summing every reply's deltas always reproduces the cumulative counters.
+  ScoreKeeper* sk = me->getScoreKeeper();
+  LossCounters cur = { sk->getTotalUnitsLost(), sk->getTotalBuildingsLost(), sk->getTotalUnitsDestroyed(),
+                       sk->getTotalBuildingsDestroyed(), sk->getTotalUnitsBuilt(), sk->getTotalBuildingsBuilt() };
+  const LossCounters base = m_haveLastLosses ? m_lastLosses : LossCounters{0,0,0,0,0,0};
+  tmp.format(",\"losses\":{\"units_lost\":%d,\"buildings_lost\":%d,\"units_destroyed\":%d,"
+             "\"buildings_destroyed\":%d,\"units_built\":%d,\"buildings_built\":%d}",
+             cur.unitsLost, cur.buildingsLost, cur.unitsDestroyed, cur.buildingsDestroyed, cur.unitsBuilt, cur.buildingsBuilt);
+  j.concat(tmp);
+  tmp.format(",\"losses_since_last_observe\":{\"units_lost\":%d,\"buildings_lost\":%d,\"units_destroyed\":%d,"
+             "\"buildings_destroyed\":%d,\"units_built\":%d,\"buildings_built\":%d}",
+             cur.unitsLost - base.unitsLost, cur.buildingsLost - base.buildingsLost,
+             cur.unitsDestroyed - base.unitsDestroyed, cur.buildingsDestroyed - base.buildingsDestroyed,
+             cur.unitsBuilt - base.unitsBuilt, cur.buildingsBuilt - base.buildingsBuilt);
+  j.concat(tmp);
+  m_lastLosses = cur; m_haveLastLosses = true;
 
   // map — named regions derived at init() (waypoints + polygon triggers).
   j.concat(",\"map\":{\"regions\":[");

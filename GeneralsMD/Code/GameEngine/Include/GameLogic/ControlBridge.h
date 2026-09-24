@@ -21,5 +21,8 @@ private:
   std::vector<BridgeRegion> m_regions;
   Int  m_bridgePlayerIndex = -1;
   Bool m_active = TRUE;
+  struct LossCounters { Int unitsLost, buildingsLost, unitsDestroyed, buildingsDestroyed, unitsBuilt, buildingsBuilt; };
+  LossCounters m_lastLosses = {0,0,0,0,0,0};
+  Bool m_haveLastLosses = false;
 };
 extern ControlBridge *TheControlBridge;
