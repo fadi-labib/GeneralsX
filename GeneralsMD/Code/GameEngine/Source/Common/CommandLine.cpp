@@ -28,6 +28,7 @@
 #include "Common/ArchiveFileSystem.h"
 #include "Common/CommandLine.h"
 #include "Common/CRCDebug.h"
+#include "Common/GameCommon.h"
 #include "Common/LocalFileSystem.h"
 #include "Common/Recorder.h"
 #include "Common/version.h"
@@ -790,6 +791,21 @@ Int parseSlowmo(char *args[], int)
 	return 1;
 }
 
+// GeneralsX @build dx8wasm - `-slowmofps N` sets the logic rate slow-mo runs at (1..30, 30 = real
+// time). Only matters with -slowmo or -bridge; alone it changes nothing.
+Int parseSlowmoFps(char *args[], int num)
+{
+	if (num > 1)
+	{
+		Int fps = atoi(args[1]);
+		if (fps < 1) fps = 1;
+		if (fps > LOGICFRAMES_PER_SECOND) fps = LOGICFRAMES_PER_SECOND;
+		TheWritableGlobalData->m_wasmSlowmoFps = fps;
+		return 2;
+	}
+	return 1;
+}
+
 // GeneralsX @build dx8wasm - `-control` creates the LLM-general ControlBridge and lets it
 // drain the /control channel, without the rest of -bridge (no slow-mo, slot 0 stays human).
 // The per-op wire tests use it. Without -control or -bridge no bridge exists at all: its
@@ -1440,6 +1456,7 @@ static CommandLineParam paramsForEngineInit[] =
 	{ "-campaign", parseCampaign },
 	{ "-skirmishonly", parseSkirmishOnly },
 	{ "-slowmo", parseSlowmo },
+	{ "-slowmofps", parseSlowmoFps },
 	{ "-control", parseControl },
 	{ "-bridge", parseBridge },
 #endif
