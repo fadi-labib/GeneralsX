@@ -5,6 +5,8 @@
 #include "Common/GameType.h"   // Coord3D
 #include <vector>
 
+class Player;
+
 struct BridgeRegion { AsciiString name; Coord3D center; Real radius; };
 
 class ControlBridge
@@ -19,6 +21,9 @@ public:
   Int bridgePlayerIndex() const { return m_bridgePlayerIndex; }
 private:
   std::vector<BridgeRegion> m_regions;
+  std::vector<BridgeRegion> m_starts;    // Player_N_Start waypoints, in player-number order (Task 8)
+  Int  m_myStart = -1;                   // index into m_starts nearest our command center; -1 unresolved
+  void resolveMyStart(Player* me);       // lazily resolves m_myStart on first use after bind
   Int  m_bridgePlayerIndex = -1;
   Bool m_active = TRUE;
   struct LossCounters { Int unitsLost, buildingsLost, unitsDestroyed, buildingsDestroyed, unitsBuilt, buildingsBuilt; };

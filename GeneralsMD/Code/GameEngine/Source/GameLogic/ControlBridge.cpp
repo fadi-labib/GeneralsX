@@ -253,6 +253,40 @@ void ControlBridge::init(Bool active)
   }
   fprintf(stderr, "[BRIDGE] %zu regions derived\n", m_regions.size());
   fflush(stderr);
+
+  // Task 8: semantic region aliases. Collect the Player_N_Start waypoints (public
+  // knowledge in an RTS -- shown on the map-select screen) so observe() can expose
+  // "my_base" and "enemy_start_N" ahead of the ~250 raw waypoint/trigger names.
+  // m_myStart is resolved lazily (resolveMyStart) once the bridge player's command
+  // center exists, which is after the bind -- never here.
+  m_starts.clear(); m_myStart = -1;
+  for (Int n = 1; n <= MAX_PLAYER_COUNT; ++n) {
+    AsciiString wn; wn.format("Player_%d_Start", n);
+    for (const BridgeRegion& r : m_regions) if (r.name == wn) { m_starts.push_back(r); break; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resolveMyStart (Task 8): identify which Player_N_Start waypoint is "my_base" --
+// the one nearest our command center (KINDOF_COMMANDCENTER). Resolved lazily
+// because the command center doesn't exist at init() time (map load); called
+// from observe() every frame until it succeeds (m_myStart >= 0), then a no-op.
+// A captureless lambda converts to ObjectIterateFunc's C function-pointer type.
+// ---------------------------------------------------------------------------
+void ControlBridge::resolveMyStart(Player* me)
+{
+  if (m_myStart >= 0 || m_starts.empty() || !me) return;
+  struct CC { Coord3D p; Bool found; } cc = { {0,0,0}, FALSE };
+  me->iterateObjects([](Object* o, void* ud) {
+    CC* c = (CC*)ud;
+    if (!c->found && o && o->isKindOf(KINDOF_COMMANDCENTER)) { c->p = *o->getPosition(); c->found = TRUE; }
+  }, &cc);
+  if (!cc.found) return;   // try again next observe
+  Real best = 1e30f;
+  for (size_t i = 0; i < m_starts.size(); ++i) {
+    const Real dx = m_starts[i].center.x - cc.p.x, dy = m_starts[i].center.y - cc.p.y, d = dx*dx + dy*dy;
+    if (d < best) { best = d; m_myStart = (Int)i; }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -842,9 +876,16 @@ AsciiString ControlBridge::observe(Int playerIndex)
   j.concat(tmp);
   m_lastLosses = cur; m_haveLastLosses = true;
 
-  // map — named regions derived at init() (waypoints + polygon triggers).
+  // map — named regions derived at init() (waypoints + polygon triggers), with
+  // Task 8's semantic aliases ("my_base", "enemy_start_N") listed first.
+  resolveMyStart(me);
   j.concat(",\"map\":{\"regions\":[");
   Bool firstR = TRUE;
+  if (m_myStart >= 0) { j.concat("\"my_base\""); firstR = FALSE; }
+  for (size_t i = 0, e = 1; i < m_starts.size(); ++i) {
+    if ((Int)i == m_myStart) continue;
+    AsciiString a; a.format("%s\"enemy_start_%u\"", firstR ? "" : ",", (unsigned)e++); j.concat(a); firstR = FALSE;
+  }
   for (const BridgeRegion& r : m_regions) {
     if (!firstR) j.concat(',');
     firstR = FALSE;
@@ -1153,15 +1194,18 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     }
 
     fprintf(stderr, "[BRIDGE] attack: committed %d unit(s) of player %d to region '%s'%s\n",
-            committed, idx, region->name.str(), fogged ? " (into fog)" : "");
+            committed, idx, targetRegion.str(), fogged ? " (into fog)" : "");
     fflush(stderr);
 
-    // 6) Result. teams_committed = the number of units we actually ordered.
+    // 6) Result. teams_committed = the number of units we actually ordered. Echo
+    //    the REQUESTED name (Task 8), not region->name, so an alias like
+    //    "enemy_start_1" comes back as itself rather than the underlying
+    //    "Player_N_Start" waypoint name.
     AsciiString result = "{\"accepted\":true,\"teams_committed\":";
     AsciiString num; num.format("%d", committed);
     result.concat(num);
     result.concat(",\"target\":\"");
-    jsonEscape(result, region->name.str());
+    jsonEscape(result, targetRegion.str());
     result.concat("\"");
     if (fogged)
       result.concat(",\"warning\":\"target_region not currently visible \\u2014 "
@@ -1230,14 +1274,15 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     const char* tmplName = tt ? tt->getName().str() : "";
 
     fprintf(stderr, "[BRIDGE] scout: dispatched '%s' to region '%s'\n",
-            tmplName, region->name.str());
+            tmplName, regionName.str());
     fflush(stderr);
 
-    // 5) Result.
+    // 5) Result. Echo the REQUESTED name (Task 8), not region->name, so an
+    //    alias like "enemy_start_1" comes back as itself.
     AsciiString result = "{\"accepted\":true,\"scout_dispatched\":\"";
     jsonEscape(result, tmplName);
     result.concat("\",\"region\":\"");
-    jsonEscape(result, region->name.str());
+    jsonEscape(result, regionName.str());
     result.concat("\"}");
     return result;
   }
@@ -1247,6 +1292,17 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
 const BridgeRegion* ControlBridge::regionByName(const AsciiString& n) const
 {
+  // Task 8: semantic aliases resolve first ("my_base", "enemy_start_N"), ahead
+  // of the raw waypoint/trigger lookup.
+  if (n == "my_base") return m_myStart >= 0 ? &m_starts[m_myStart] : NULL;
+  if (n.startsWith("enemy_start_")) {
+    Int want = atoi(n.str() + 12), e = 0;
+    for (size_t i = 0; i < m_starts.size(); ++i) {
+      if ((Int)i == m_myStart) continue;
+      if (++e == want) return &m_starts[i];
+    }
+    return NULL;
+  }
   for (const BridgeRegion& r : m_regions) if (r.name == n) return &r;
   return NULL;
 }
