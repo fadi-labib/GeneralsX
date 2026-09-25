@@ -869,6 +869,20 @@ AsciiString ControlBridge::observe(Int playerIndex)
   ProdAccum pa; pa.n = 0; me->iterateObjects(prodCb, &pa);
   j.concat(",\"production\":["); j.concat(pa.json); j.concat("]");
 
+  // build_plan: the AI's own build list, in order. `queued` is the priority flag build_now
+  // sets, so it is the direct read-back of a build_now order (Follow-up Task 2).
+  j.concat(",\"build_plan\":[");
+  Bool firstB = TRUE;
+  for (BuildListInfo* n = me->getBuildList(); n; n = n->getNext()) {
+    if (!firstB) j.concat(',');
+    firstB = FALSE;
+    const Bool built = TheGameLogic->findObjectByID(n->getObjectID()) != NULL;
+    j.concat("{\"template\":\""); jsonEscape(j, n->getTemplateName().str());
+    tmp.format("\",\"built\":%s,\"queued\":%s}", built ? "true" : "false", n->isPriorityBuild() ? "true" : "false");
+    j.concat(tmp);
+  }
+  j.concat("]");
+
   // enemy — fog-limited. One entry per enemy player; tallies count ONLY objects
   // currently visible to the observer (see enemyObjectCb's shroud gate).
   j.concat(",\"enemy\":{\"players\":[");
