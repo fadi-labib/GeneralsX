@@ -880,16 +880,17 @@ AsciiString ControlBridge::observe(Int playerIndex)
   // never clears that flag, so a finished entry keeps queued:true for the rest of the match.
   // `built` = a live object exists for the entry (construction started); `under_construction`
   // tells a scaffold from a finished structure. AIPlayer::processBaseBuilding re-points a
-  // destroyed GLA entry's object id at its rebuild hole, and a hole is not a building, so it
-  // reports built:false.
+  // destroyed GLA entry's object id at its rebuild hole, which runs its own rebuild
+  // (RebuildHoleBehavior); build_now above treats that object as "already built", so the
+  // snapshot agrees: a hole is built:true, under_construction:true.
   j.concat(",\"build_plan\":[");
   Bool firstB = TRUE;
   for (BuildListInfo* n = me->getBuildList(); n; n = n->getNext()) {
     if (!firstB) j.concat(',');
     firstB = FALSE;
     const Object* bo = TheGameLogic->findObjectByID(n->getObjectID());
-    const Bool built = bo != NULL && !bo->isKindOf(KINDOF_REBUILD_HOLE);
-    const Bool underConstruction = built && bo->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION);
+    const Bool built = bo != NULL;
+    const Bool underConstruction = built && (bo->isKindOf(KINDOF_REBUILD_HOLE) || bo->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION));
     j.concat("{\"template\":\""); jsonEscape(j, n->getTemplateName().str());
     tmp.format("\",\"built\":%s,\"under_construction\":%s,\"queued\":%s}",
                built ? "true" : "false", underConstruction ? "true" : "false", n->isPriorityBuild() ? "true" : "false");
