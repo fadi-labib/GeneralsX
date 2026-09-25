@@ -29,9 +29,10 @@ private:
   struct LossCounters { Int unitsLost, buildingsLost, unitsDestroyed, buildingsDestroyed, unitsBuilt, buildingsBuilt; };
   LossCounters m_lastLosses = {0,0,0,0,0,0};
   Bool m_haveLastLosses = false;
-  // Bumped by init() on every map load (shell map included) and sent as "match_id" on every
+  // Advanced by init() on every map load (shell map included) and sent as "match_id" on every
   // observe reply, so a client can tell matches apart without guessing from frame numbers.
-  // Only ever increases within one engine process; starts at 0 on construction.
+  // Set to max(previous + 1, wall-clock seconds), so it keeps increasing across page reloads
+  // too (assuming the wall clock does not step backwards). 0 until the first map load.
   UnsignedInt m_matchId = 0;
 };
 extern ControlBridge *TheControlBridge;

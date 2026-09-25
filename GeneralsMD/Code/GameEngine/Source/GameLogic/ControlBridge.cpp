@@ -28,6 +28,7 @@
 #include <list>                         // Player::getPlayerTeams() -> std::list<TeamPrototype*>
 #include <cstdlib>                      // atoi
 #include <cstring>                      // strstr
+#include <ctime>                        // time() -- match_id seed
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #include <emscripten/threading.h>       // MAIN_THREAD_EM_ASM(_INT): proxy to the browser main thread
@@ -243,7 +244,14 @@ void ControlBridge::init(Bool active)
   // op keeps acting on a player index from the last match.
   m_bridgePlayerIndex = -1;
   m_haveLastLosses = false;
-  ++m_matchId;   // a new map load is a new match; observe replies carry it as "match_id"
+  // A new map load is a new match; observe replies carry this as "match_id". Seeded from the
+  // wall clock (seconds; Date.now() under Emscripten) so ids keep growing across a page reload,
+  // which restarts the engine while the MCP server that compares them lives on. Assumes the
+  // wall clock does not step backwards between reloads; +1 covers two loads in one second.
+  {
+    const UnsignedInt now = (UnsignedInt)time(NULL);
+    m_matchId = (now > m_matchId + 1) ? now : m_matchId + 1;
+  }
   m_regions.clear();
   for (Waypoint *w = TheTerrainLogic ? TheTerrainLogic->getFirstWaypoint() : NULL;
        w; w = w->getNext()) {
