@@ -16,8 +16,10 @@
 #include "Common/Player.h"              // Player, Money, Energy
 #include "Common/PlayerList.h"          // ThePlayerList
 #include "Common/ScoreKeeper.h"         // Player::getScoreKeeper() (Task 4)
-#include "Common/Team.h"                // ObjectIterateFunc, Team
+#include "Common/Team.h"                // ObjectIterateFunc, Team, TeamFactory
 #include "Common/ThingTemplate.h"       // ThingTemplate::getName
+#include "Common/ThingFactory.h"        // TheThingFactory->findTemplate (train_now precondition mirror)
+#include "Common/BuildAssistant.h"      // TheBuildAssistant->isPossibleToMakeUnit (train_now precondition mirror)
 #include "Common/KindOf.h"              // KINDOF_*
 #include <algorithm>                    // std::sort (threats_near_me ranking, Task 5)
 #include <utility>
@@ -531,6 +533,16 @@ static const LogicalMap kLogicalMap[] = {
   { "superweapon",    "ParticleCannon MissileSilo ScudStorm NuclearMissile Nuke" },
 };
 
+// Finding D: alias parsing must accept "enemy_start_<digits>" only, not
+// "enemy_start_1abc" (atoi() alone silently accepts and truncates trailing junk).
+// `s` must be non-empty and every character a decimal digit.
+static Bool isAllDigits(const char* s)
+{
+  if (!s || !*s) return FALSE;
+  for (; *s; ++s) if (*s < '0' || *s > '9') return FALSE;
+  return TRUE;
+}
+
 // Case-insensitive: does `hay` contain `needle` as a substring?
 static Bool ciContains(const char* hay, const char* needle)
 {
@@ -614,6 +626,29 @@ static Bool unitTemplateMatchesRequest(const char* tmpl, const AsciiString& req)
   for (const LogicalMap& m : kUnitLogicalMap)
     if (req == m.logical) return matchesAnyKeyword(tmpl, m.keywords);
   return ciContains(tmpl, req.str());
+}
+
+// train_now precondition mirror (Important A / finding A): does the bridge player own a
+// buildable-from factory for `thing`? This mirrors AIPlayer::findFactory(thing, /*busyOK=*/true)
+// (AIPlayer.cpp:1428-1462) closely enough to reproduce its ONLY failure signal (no build-list
+// object can make this thing at all) without touching AIPlayer's protected members: walk the
+// player's build-list objects, skip ones under construction/being sold or not ours, and accept
+// the first whose ProductionUpdateInterface + TheBuildAssistant->isPossibleToMakeUnit() agrees it
+// could make `thing` -- busy or not (busyOK=true), since a busy-but-valid factory still means
+// "queueable", matching what buildSpecificAITeam actually gates on.
+static Bool hasFactoryForThing(Player* p, const ThingTemplate* thing)
+{
+  if (!p || !thing || !TheGameLogic || !TheBuildAssistant) return FALSE;
+  for (BuildListInfo* info = p->getBuildList(); info; info = info->getNext()) {
+    Object* factory = TheGameLogic->findObjectByID(info->getObjectID());
+    if (!factory) continue;
+    if (factory->getControllingPlayer() != p) continue;
+    if (factory->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION)) continue;
+    if (factory->testStatus(OBJECT_STATUS_SOLD)) continue;
+    if (!factory->getProductionUpdateInterface()) continue;
+    if (TheBuildAssistant->isPossibleToMakeUnit(factory, thing)) return TRUE;
+  }
+  return FALSE;
 }
 
 // Does `pp` own at least one team prototype with a real unit composition
@@ -724,7 +759,12 @@ void ControlBridge::tick()
         result = nr;
       } else {
         result = observe(m_bridgePlayerIndex);
-        if (result.isEmpty()) result = "{\"ready\":false,\"reason\":\"bound player not found\"}";
+        if (result.isEmpty()) {
+          AsciiString nr;
+          nr.format("{\"ready\":false,\"reason\":\"bound player not found\",\"frame\":%u}",
+                    (unsigned)TheGameLogic->getFrame());
+          result = nr;
+        }
       }
     } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout" ||
                op == "build_now" || op == "train_now") {
@@ -788,9 +828,19 @@ AsciiString ControlBridge::observe(Int playerIndex)
     else if (TheVictoryConditions->hasBeenDefeated(me)) match = "lost";
   }
 
+  // speed (finding D): real logic-time scale, not a hard-coded 1.00. Slow-mo (-slowmo/-bridge)
+  // only takes effect when m_wasmSlowmoSkirmish is set AND the requested fps is below real time
+  // (GameEngine.cpp:1014-1019); mirror that gate here rather than reporting m_wasmSlowmoFps/30
+  // unconditionally (e.g. -slowmofps 30 or slow-mo simply off must both read as 1.00).
+  Real speed = 1.0f;
+  if (TheGlobalData && TheGlobalData->m_wasmSlowmoSkirmish &&
+      TheGlobalData->m_wasmSlowmoFps > 0 && TheGlobalData->m_wasmSlowmoFps < LOGICFRAMES_PER_SECOND) {
+    speed = (Real)TheGlobalData->m_wasmSlowmoFps / (Real)LOGICFRAMES_PER_SECOND;
+  }
+
   // Top-level + self.
   tmp.format("{\"ready\":true,\"frame\":%u,\"speed\":%.2f,\"match\":\"%s\",\"self\":{\"faction\":\"",
-             (unsigned)TheGameLogic->getFrame(), 1.0f, match);
+             (unsigned)TheGameLogic->getFrame(), speed, match);
   j.concat(tmp);
   jsonEscape(j, me->getSide().str());
   tmp.format("\",\"cash\":%u,\"power\":{\"produced\":%d,\"consumed\":%d,\"surplus\":%d},"
@@ -1315,12 +1365,33 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     AsciiString result;
     if (building) {
+      // Finding A: mirror AISkirmishPlayer::buildSpecificAIBuilding's OWN precondition
+      // (AISkirmishPlayer.cpp:409-445) before calling it, instead of always claiming
+      // "requested_now". That function marks only the first build-list entry that is
+      // BOTH not-yet-built (no live Object for its BuildListInfo::getObjectID()) AND not
+      // already flagged isPriorityBuild(); if every matching entry fails that test it logs
+      // "already built or queued" and does nothing -- silently. Find such an entry
+      // ourselves so we can tell the caller apart from a real accept.
       AsciiString tmpl;
-      for (BuildListInfo* n = p->getBuildList(); n && tmpl.isEmpty(); n = n->getNext())
-        if (templateMatchesRequest(n->getTemplateName().str(), want)) tmpl = n->getTemplateName();
+      Bool anyMatch = FALSE;
+      for (BuildListInfo* n = p->getBuildList(); n; n = n->getNext()) {
+        if (!templateMatchesRequest(n->getTemplateName().str(), want)) continue;
+        anyMatch = TRUE;
+        if (TheGameLogic->findObjectByID(n->getObjectID())) continue;   // already built
+        if (n->isPriorityBuild())                          continue;   // already queued
+        tmpl = n->getTemplateName();
+        break;
+      }
       if (tmpl.isEmpty()) {
-        result = "{\"accepted\":false,\"reason\":\""; jsonEscape(result, want.str());
-        result.concat(" is not in this faction's build list\"}");
+        result = "{\"accepted\":false,\"reason\":\"";
+        if (!anyMatch) {
+          jsonEscape(result, want.str());
+          result.concat(" is not in this faction's build list\"}");
+        } else {
+          result.concat("every ");
+          jsonEscape(result, want.str());
+          result.concat(" in the build list is already built or queued\"}");
+        }
         return result;
       }
       p->buildSpecificBuilding(tmpl);
@@ -1338,6 +1409,46 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
         result = "{\"accepted\":false,\"reason\":\"no team trains "; jsonEscape(result, want.str()); result.concat("\"}");
         return result;
       }
+
+      // Finding A: mirror AIPlayer::buildSpecificAITeam's preconditions (AIPlayer.cpp:
+      // 2435-2477) before calling Player::buildSpecificTeam(hit) (which always does a
+      // priorityBuild=true call, so it queues unconditionally unless we refuse first).
+      // We reproduce ONLY the checks that make it return without queueing (the ones that
+      // don't touch protected AIPlayer state and have no side effects to evaluate):
+      //   1) getCanBuildUnits() must be true.
+      //   2) a singleton team whose Team instance already has objects can't be re-queued.
+      //   3) isPossibleToBuildTeam(hit, requireIdleFactory=false, needMoney) — its ONLY
+      //      false-returning branch reachable with requireIdleFactory=false is "some unit
+      //      type in the team has no factory at all" (findFactory(thing,true)==NULL); the
+      //      not-enough-money branch still queues (buildSpecificAITeam queues anyway and
+      //      just logs a note), so it is not a rejection case and is deliberately not
+      //      reproduced here.
+      const TeamTemplateInfo* ti = hit->getTemplateInfo();
+      const char* why = NULL;
+      if (!p->getCanBuildUnits()) {
+        why = "unit building is disabled for this player";
+      } else if (hit->getIsSingleton()) {
+        Team* singleton = TheTeamFactory ? TheTeamFactory->findTeam(hit->getName()) : NULL;
+        if (singleton && singleton->hasAnyObjects()) why = "singleton team already exists";
+      }
+      if (!why) {
+        const Int n = (ti->m_numUnitsInfo < (Int)TeamTemplateInfo::MAX_UNIT_TYPES)
+                        ? ti->m_numUnitsInfo : (Int)TeamTemplateInfo::MAX_UNIT_TYPES;
+        for (Int u = 0; u < n; ++u) {
+          const ThingTemplate* thing = TheThingFactory ? TheThingFactory->findTemplate(ti->m_unitsInfo[u].unitThingName) : NULL;
+          if (!thing) continue;
+          if (!hasFactoryForThing(p, thing)) { why = "required factories/tech missing"; break; }
+        }
+      }
+      if (why) {
+        result = "{\"accepted\":false,\"reason\":\"cannot train ";
+        jsonEscape(result, hit->getName().str());
+        result.concat(" now: ");
+        jsonEscape(result, why);
+        result.concat("\"}");
+        return result;
+      }
+
       p->buildSpecificTeam(hit);
       result = "{\"accepted\":true,\"effect\":\"requested_now\",\"team\":\""; jsonEscape(result, hit->getName().str()); result.concat("\"}");
     }
@@ -1356,6 +1467,7 @@ const BridgeRegion* ControlBridge::regionByName(const AsciiString& n) const
     // Fix round 1 (Important #1): until my_base resolves we don't know which
     // start is ours, so no start can be safely labeled an enemy's yet.
     if (m_myStart < 0) return NULL;
+    if (!isAllDigits(n.str() + 12)) return NULL;   // reject "enemy_start_1abc" etc.
     Int want = atoi(n.str() + 12), e = 0;
     for (size_t i = 0; i < m_starts.size(); ++i) {
       if ((Int)i == m_myStart) continue;
