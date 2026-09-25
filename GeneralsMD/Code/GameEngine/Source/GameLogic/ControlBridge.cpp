@@ -814,9 +814,15 @@ AsciiString ControlBridge::observe(Int playerIndex)
   const Bool everAttacked = atk != 0;
   const Real agoSec = everAttacked ? (Real)(now - atk) / LOGICFRAMES_PER_SECOND : -1.0f;
   const Bool underAttack = everAttacked && agoSec <= 10.0f;
+  // attackers_this_match: cumulative for the whole match (Player::m_attackedBy[] has no
+  // timestamps), enemies only — same relationship test the enemy section below uses, so a
+  // teammate or self hit (ActiveBody.cpp:607 sets the flag with no relationship check) never
+  // appears here. Recency is what under_attack/last_attacked_seconds_ago are for.
   AsciiString attackers = "[";
   for (Int pi = 0, n = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
     if (pi == playerIndex || !me->getAttackedBy(pi)) continue;
+    Player* attacker = ThePlayerList->getNthPlayer(pi);
+    if (!attacker || me->getRelationship(attacker->getDefaultTeam()) != ENEMIES) continue;
     AsciiString one; one.format("%s%d", n++ ? "," : "", pi); attackers.concat(one);
   }
   attackers.concat("]");
@@ -848,7 +854,7 @@ AsciiString ControlBridge::observe(Int playerIndex)
              (unsigned)cash, produced, consumed, surplus, underAttack ? "true" : "false");
   j.concat(tmp);
   if (everAttacked) { tmp.format("%.1f", agoSec); j.concat(tmp); } else j.concat("null");
-  j.concat(",\"attacked_by\":"); j.concat(attackers); j.concat("}");
+  j.concat(",\"attackers_this_match\":"); j.concat(attackers); j.concat("}");
 
   // economy (income + collector count are real; supply-dock detail is v2).
   tmp.format(",\"economy\":{\"supply_collectors\":%d,\"income_per_min\":%d}",
