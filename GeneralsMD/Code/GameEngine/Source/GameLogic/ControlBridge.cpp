@@ -1198,6 +1198,13 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     // 2) Resolve the region -> its center Coord3D (regions come from Task 1.1's
     //    waypoint/polygon derivation). Unknown name is a hard reject.
+    // Task 5: resolveMyStart() used to run only from observe(), so "my_base"/
+    // "enemy_start_N" aliases were unresolved (and refused as unknown-region)
+    // until an observe had been sent at least once. Resolve here too, before
+    // regionByName, so the very first order can use them. Idempotent and safe
+    // when the bridge player's command center doesn't exist yet (no-op).
+    if (m_bridgePlayerIndex >= 0 && ThePlayerList)
+      resolveMyStart(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
     const BridgeRegion* region = regionByName(targetRegion);
     if (!region)
       return "{\"accepted\":false,\"reason\":\"unknown region\"}";
@@ -1308,6 +1315,10 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
       return "{\"accepted\":false,\"reason\":\"missing args.region\"}";
 
     // 2) Resolve the region -> its center Coord3D. Unknown name is a hard reject.
+    // Task 5: resolve "my_base"/"enemy_start_N" before the first observe too --
+    // see the matching comment in the `attack` branch above.
+    if (m_bridgePlayerIndex >= 0 && ThePlayerList)
+      resolveMyStart(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
     const BridgeRegion* region = regionByName(regionName);
     if (!region)
       return "{\"accepted\":false,\"reason\":\"unknown region\"}";
