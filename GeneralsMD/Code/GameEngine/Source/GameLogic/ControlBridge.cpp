@@ -243,6 +243,7 @@ void ControlBridge::init(Bool active)
   // op keeps acting on a player index from the last match.
   m_bridgePlayerIndex = -1;
   m_haveLastLosses = false;
+  ++m_matchId;   // a new map load is a new match; observe replies carry it as "match_id"
   m_regions.clear();
   for (Waypoint *w = TheTerrainLogic ? TheTerrainLogic->getFirstWaypoint() : NULL;
        w; w = w->getNext()) {
@@ -755,15 +756,15 @@ void ControlBridge::tick()
         // Before the bind the only player we could read is index 0, the neutral player. Say so
         // rather than hand the model someone else's cash, base and fog.
         AsciiString nr;
-        nr.format("{\"ready\":false,\"reason\":\"bridge player not bound yet\",\"frame\":%u}",
-                  (unsigned)TheGameLogic->getFrame());
+        nr.format("{\"ready\":false,\"reason\":\"bridge player not bound yet\",\"frame\":%u,\"match_id\":%u}",
+                  (unsigned)TheGameLogic->getFrame(), (unsigned)m_matchId);
         result = nr;
       } else {
         result = observe(m_bridgePlayerIndex);
         if (result.isEmpty()) {
           AsciiString nr;
-          nr.format("{\"ready\":false,\"reason\":\"bound player not found\",\"frame\":%u}",
-                    (unsigned)TheGameLogic->getFrame());
+          nr.format("{\"ready\":false,\"reason\":\"bound player not found\",\"frame\":%u,\"match_id\":%u}",
+                    (unsigned)TheGameLogic->getFrame(), (unsigned)m_matchId);
           result = nr;
         }
       }
@@ -846,8 +847,8 @@ AsciiString ControlBridge::observe(Int playerIndex)
   }
 
   // Top-level + self.
-  tmp.format("{\"ready\":true,\"frame\":%u,\"speed\":%.2f,\"match\":\"%s\",\"self\":{\"faction\":\"",
-             (unsigned)TheGameLogic->getFrame(), speed, match);
+  tmp.format("{\"ready\":true,\"frame\":%u,\"match_id\":%u,\"speed\":%.2f,\"match\":\"%s\",\"self\":{\"faction\":\"",
+             (unsigned)TheGameLogic->getFrame(), (unsigned)m_matchId, speed, match);
   j.concat(tmp);
   jsonEscape(j, me->getSide().str());
   tmp.format("\",\"cash\":%u,\"power\":{\"produced\":%d,\"consumed\":%d,\"surplus\":%d},"
