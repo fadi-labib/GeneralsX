@@ -452,6 +452,9 @@ public:
 	/// Is this player a skirmish ai player?
 	Bool isSkirmishAIPlayer();
 
+	/// The AI brain (nullptr for a human player). Read-only: the control bridge reads the AI team build queue through it.
+	AIPlayer* getAIPlayer() const { return m_ai; }
+
 	/// Have the ai check for bridges.
 	virtual Bool checkBridges(Object *unit, Waypoint *way);
 

@@ -17,6 +17,7 @@
 #include "Common/PlayerList.h"          // ThePlayerList
 #include "Common/ScoreKeeper.h"         // Player::getScoreKeeper() (Task 4)
 #include "Common/Team.h"                // ObjectIterateFunc, Team, TeamFactory
+#include "GameLogic/AIPlayer.h"        // AIPlayer::iterate_TeamBuildQueue, TeamInQueue (team_queue; needs Team.h)
 #include "Common/ThingTemplate.h"       // ThingTemplate::getName
 #include "Common/ThingFactory.h"        // TheThingFactory->findTemplate (train_now precondition mirror)
 #include "Common/BuildAssistant.h"      // TheBuildAssistant->isPossibleToMakeUnit (train_now precondition mirror)
@@ -895,6 +896,27 @@ AsciiString ControlBridge::observe(Int playerIndex)
     tmp.format("\",\"built\":%s,\"under_construction\":%s,\"queued\":%s}",
                built ? "true" : "false", underConstruction ? "true" : "false", n->isPriorityBuild() ? "true" : "false");
     j.concat(tmp);
+  }
+  j.concat("]");
+
+  // team_queue: the AI's team build queue (AIPlayer::m_TeamBuildQueue), head first. `priority`
+  // is TeamInQueue::m_priorityBuild, which only buildSpecificAITeam(proto, true) sets -- the
+  // call train_now makes through Player::buildSpecificTeam; the AI's own queuing passes false.
+  // The engine never clears the flag on a queued entry; the entry leaves this queue when its
+  // team is fully built, its build time expires, or the team is destroyed. [] without an AI.
+  j.concat(",\"team_queue\":[");
+  if (AIPlayer* ai = me->getAIPlayer()) {
+    Bool firstT = TRUE;
+    for (DLINK_ITERATOR<TeamInQueue> it = ai->iterate_TeamBuildQueue(); !it.done(); it.advance()) {
+      const TeamInQueue* tq = it.cur();
+      if (!tq) continue;
+      if (!firstT) j.concat(',');
+      firstT = FALSE;
+      j.concat("{\"team\":\"");
+      if (tq->m_team) jsonEscape(j, tq->m_team->getName().str());
+      tmp.format("\",\"priority\":%s}", tq->m_priorityBuild ? "true" : "false");
+      j.concat(tmp);
+    }
   }
   j.concat("]");
 
