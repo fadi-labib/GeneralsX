@@ -5,6 +5,8 @@
 #include "Common/GameType.h"   // Coord3D
 #include <vector>
 
+class Player;
+
 struct BridgeRegion { AsciiString name; Coord3D center; Real radius; };
 
 class ControlBridge
@@ -19,7 +21,18 @@ public:
   Int bridgePlayerIndex() const { return m_bridgePlayerIndex; }
 private:
   std::vector<BridgeRegion> m_regions;
+  std::vector<BridgeRegion> m_starts;    // Player_N_Start waypoints, in player-number order (Task 8)
+  Int  m_myStart = -1;                   // index into m_starts nearest our command center; -1 unresolved
+  void resolveMyStart(Player* me);       // lazily resolves m_myStart on first use after bind
   Int  m_bridgePlayerIndex = -1;
   Bool m_active = TRUE;
+  struct LossCounters { Int unitsLost, buildingsLost, unitsDestroyed, buildingsDestroyed, unitsBuilt, buildingsBuilt; };
+  LossCounters m_lastLosses = {0,0,0,0,0,0};
+  Bool m_haveLastLosses = false;
+  // Advanced by init() on every map load (shell map included) and sent as "match_id" on every
+  // observe reply, so a client can tell matches apart without guessing from frame numbers.
+  // Set to max(previous + 1, wall-clock seconds), so it keeps increasing across page reloads
+  // too (assuming the wall clock does not step backwards). 0 until the first map load.
+  UnsignedInt m_matchId = 0;
 };
 extern ControlBridge *TheControlBridge;

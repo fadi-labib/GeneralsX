@@ -7,20 +7,28 @@
 #include "GameLogic/GameLogic.h"        // TheGameLogic
 #include "GameLogic/Object.h"           // Object, getShroudedStatus/getTemplate/isKindOf
 #include "GameLogic/Module/AIUpdate.h"  // AIUpdateInterface::aiAttackMoveToPosition (attack order)
+#include "GameLogic/Module/ProductionUpdate.h" // ProductionUpdateInterface, ProductionEntry (Task 7)
 #include "GameLogic/Weapon.h"           // NO_MAX_SHOTS_LIMIT
 #include "GameLogic/PartitionManager.h" // ThePartitionManager, getShroudStatusForPlayer, CellShroudStatus
+#include "GameLogic/VictoryConditions.h" // TheVictoryConditions, hasAchievedVictory/hasBeenDefeated (Task 6)
 #include "Common/GameCommon.h"          // CMD_FROM_AI, CELLSHROUD_CLEAR
 #include "Common/GlobalData.h"          // TheGlobalData->m_wasmBridgeSide (Task 4.3)
 #include "Common/Player.h"              // Player, Money, Energy
 #include "Common/PlayerList.h"          // ThePlayerList
-#include "Common/Team.h"                // ObjectIterateFunc, Team
+#include "Common/ScoreKeeper.h"         // Player::getScoreKeeper() (Task 4)
+#include "Common/Team.h"                // ObjectIterateFunc, Team, TeamFactory
+#include "GameLogic/AIPlayer.h"        // AIPlayer::iterate_TeamBuildQueue, TeamInQueue (team_queue; needs Team.h)
 #include "Common/ThingTemplate.h"       // ThingTemplate::getName
+#include "Common/ThingFactory.h"        // TheThingFactory->findTemplate (train_now precondition mirror)
+#include "Common/BuildAssistant.h"      // TheBuildAssistant->isPossibleToMakeUnit (train_now precondition mirror)
 #include "Common/KindOf.h"              // KINDOF_*
+#include <algorithm>                    // std::sort (threats_near_me ranking, Task 5)
 #include <utility>
 #include <vector>
 #include <list>                         // Player::getPlayerTeams() -> std::list<TeamPrototype*>
 #include <cstdlib>                      // atoi
 #include <cstring>                      // strstr
+#include <ctime>                        // time() -- match_id seed
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #include <emscripten/threading.h>       // MAIN_THREAD_EM_ASM(_INT): proxy to the browser main thread
@@ -109,7 +117,17 @@ struct EnemyAccum {
   std::vector<CountEntry> structures;   // only currently-visible enemy buildings
   std::vector<CountEntry> army;         // only currently-visible enemy units
   Int visibleObjects;
+  const std::vector<Coord3D>* myStructures;   // our structure positions (Task 5)
+  std::vector<CountEntry> threats;            // visible enemy units within 500 units of ours
 };
+
+// Our own structures' positions, gathered once per observe() so the enemy loop below can
+// test each visible enemy unit's proximity to our base (Task 5's threats_near_me).
+struct StructPosAccum { std::vector<Coord3D> pos; };
+void structPosCb(Object* obj, void* ud)
+{
+  if (obj && obj->isKindOf(KINDOF_STRUCTURE)) ((StructPosAccum*)ud)->pos.push_back(*obj->getPosition());
+}
 
 void enemyObjectCb(Object* obj, void* ud)
 {
@@ -126,6 +144,16 @@ void enemyObjectCb(Object* obj, void* ud)
   if (obj->isKindOf(KINDOF_STRUCTURE)) bumpCount(a->structures, nm);
   else                                 bumpCount(a->army, nm);
   ++a->visibleObjects;
+
+  // threats_near_me: visible, non-structure enemy units within 500 world units (~50 map
+  // cells -- a base's footprint) of ANY of our structures.
+  if (a->myStructures && !obj->isKindOf(KINDOF_STRUCTURE)) {
+    const Coord3D* p = obj->getPosition();
+    for (const Coord3D& s : *a->myStructures) {
+      const Real dx = p->x - s.x, dy = p->y - s.y;
+      if (dx * dx + dy * dy <= 500.0f * 500.0f) { bumpCount(a->threats, nm); break; }
+    }
+  }
 }
 
 // Gather a player's weapon-bearing combat units for `attack` (spec A.4). The
@@ -176,6 +204,27 @@ void scoutUnitCb(Object* obj, void* ud)
   a->unit = obj;
 }
 
+// Production queue scrape (Task 7): one entry per in-progress unit/upgrade across all of our
+// own objects' ProductionUpdateInterface queues.
+struct ProdAccum { AsciiString json; Int n; };
+void prodCb(Object* obj, void* ud)
+{
+  ProdAccum* a = (ProdAccum*)ud;
+  ProductionUpdateInterface* pu = obj ? obj->getProductionUpdateInterface() : NULL;
+  if (!pu) return;
+  for (const ProductionEntry* e = pu->firstProduction(); e; e = pu->nextProduction(e)) {
+    const Bool isUnit = e->getProductionObject() != NULL;
+    const AsciiString item = isUnit ? e->getProductionObject()->getName()
+                                    : (e->getProductionUpgrade() ? e->getProductionUpgrade()->getUpgradeName() : AsciiString("unknown"));
+    if (a->n++) a->json.concat(',');
+    a->json.concat("{\"factory\":\""); jsonEscape(a->json, obj->getTemplate()->getName().str());
+    a->json.concat("\",\"item\":\""); jsonEscape(a->json, item.str());
+    AsciiString t; t.format("\",\"kind\":\"%s\",\"percent\":%d,\"remaining\":%d}",
+                            isUnit ? "unit" : "upgrade", (Int)e->getPercentComplete(), e->getProductionQuantityRemaining());
+    a->json.concat(t);
+  }
+}
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -194,6 +243,15 @@ void ControlBridge::init(Bool active)
   // outlives them. Forget the previous game's binding, or tick() never rebinds and every
   // op keeps acting on a player index from the last match.
   m_bridgePlayerIndex = -1;
+  m_haveLastLosses = false;
+  // A new map load is a new match; observe replies carry this as "match_id". Seeded from the
+  // wall clock (seconds; Date.now() under Emscripten) so ids keep growing across a page reload,
+  // which restarts the engine while the MCP server that compares them lives on. Assumes the
+  // wall clock does not step backwards between reloads; +1 covers two loads in one second.
+  {
+    const UnsignedInt now = (UnsignedInt)time(NULL);
+    m_matchId = (now > m_matchId + 1) ? now : m_matchId + 1;
+  }
   m_regions.clear();
   for (Waypoint *w = TheTerrainLogic ? TheTerrainLogic->getFirstWaypoint() : NULL;
        w; w = w->getNext()) {
@@ -207,6 +265,40 @@ void ControlBridge::init(Bool active)
   }
   fprintf(stderr, "[BRIDGE] %zu regions derived\n", m_regions.size());
   fflush(stderr);
+
+  // Task 8: semantic region aliases. Collect the Player_N_Start waypoints (public
+  // knowledge in an RTS -- shown on the map-select screen) so observe() can expose
+  // "my_base" and "enemy_start_N" ahead of the ~250 raw waypoint/trigger names.
+  // m_myStart is resolved lazily (resolveMyStart) once the bridge player's command
+  // center exists, which is after the bind -- never here.
+  m_starts.clear(); m_myStart = -1;
+  for (Int n = 1; n <= MAX_PLAYER_COUNT; ++n) {
+    AsciiString wn; wn.format("Player_%d_Start", n);
+    for (const BridgeRegion& r : m_regions) if (r.name == wn) { m_starts.push_back(r); break; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resolveMyStart (Task 8): identify which Player_N_Start waypoint is "my_base" --
+// the one nearest our command center (KINDOF_COMMANDCENTER). Resolved lazily
+// because the command center doesn't exist at init() time (map load); called
+// from observe() every frame until it succeeds (m_myStart >= 0), then a no-op.
+// A captureless lambda converts to ObjectIterateFunc's C function-pointer type.
+// ---------------------------------------------------------------------------
+void ControlBridge::resolveMyStart(Player* me)
+{
+  if (m_myStart >= 0 || m_starts.empty() || !me) return;
+  struct CC { Coord3D p; Bool found; } cc = { {0,0,0}, FALSE };
+  me->iterateObjects([](Object* o, void* ud) {
+    CC* c = (CC*)ud;
+    if (!c->found && o && o->isKindOf(KINDOF_COMMANDCENTER)) { c->p = *o->getPosition(); c->found = TRUE; }
+  }, &cc);
+  if (!cc.found) return;   // try again next observe
+  Real best = 1e30f;
+  for (size_t i = 0; i < m_starts.size(); ++i) {
+    const Real dx = m_starts[i].center.x - cc.p.x, dy = m_starts[i].center.y - cc.p.y, d = dx*dx + dy*dy;
+    if (d < best) { best = d; m_myStart = (Int)i; }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +543,16 @@ static const LogicalMap kLogicalMap[] = {
   { "superweapon",    "ParticleCannon MissileSilo ScudStorm NuclearMissile Nuke" },
 };
 
+// Finding D: alias parsing must accept "enemy_start_<digits>" only, not
+// "enemy_start_1abc" (atoi() alone silently accepts and truncates trailing junk).
+// `s` must be non-empty and every character a decimal digit.
+static Bool isAllDigits(const char* s)
+{
+  if (!s || !*s) return FALSE;
+  for (; *s; ++s) if (*s < '0' || *s > '9') return FALSE;
+  return TRUE;
+}
+
 // Case-insensitive: does `hay` contain `needle` as a substring?
 static Bool ciContains(const char* hay, const char* needle)
 {
@@ -534,6 +636,29 @@ static Bool unitTemplateMatchesRequest(const char* tmpl, const AsciiString& req)
   for (const LogicalMap& m : kUnitLogicalMap)
     if (req == m.logical) return matchesAnyKeyword(tmpl, m.keywords);
   return ciContains(tmpl, req.str());
+}
+
+// train_now precondition mirror (Important A / finding A): does the bridge player own a
+// buildable-from factory for `thing`? This mirrors AIPlayer::findFactory(thing, /*busyOK=*/true)
+// (AIPlayer.cpp:1428-1462) closely enough to reproduce its ONLY failure signal (no build-list
+// object can make this thing at all) without touching AIPlayer's protected members: walk the
+// player's build-list objects, skip ones under construction/being sold or not ours, and accept
+// the first whose ProductionUpdateInterface + TheBuildAssistant->isPossibleToMakeUnit() agrees it
+// could make `thing` -- busy or not (busyOK=true), since a busy-but-valid factory still means
+// "queueable", matching what buildSpecificAITeam actually gates on.
+static Bool hasFactoryForThing(Player* p, const ThingTemplate* thing)
+{
+  if (!p || !thing || !TheGameLogic || !TheBuildAssistant) return FALSE;
+  for (BuildListInfo* info = p->getBuildList(); info; info = info->getNext()) {
+    Object* factory = TheGameLogic->findObjectByID(info->getObjectID());
+    if (!factory) continue;
+    if (factory->getControllingPlayer() != p) continue;
+    if (factory->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION)) continue;
+    if (factory->testStatus(OBJECT_STATUS_SOLD)) continue;
+    if (!factory->getProductionUpdateInterface()) continue;
+    if (TheBuildAssistant->isPossibleToMakeUnit(factory, thing)) return TRUE;
+  }
+  return FALSE;
 }
 
 // Does `pp` own at least one team prototype with a real unit composition
@@ -635,10 +760,24 @@ void ControlBridge::tick()
   AsciiString result;
   try {
     if (op == "observe") {
-      Int who = (m_bridgePlayerIndex >= 0) ? m_bridgePlayerIndex : 0;
-      result = observe(who);
-      if (result.isEmpty()) result = "{}";
-    } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout") {
+      if (m_bridgePlayerIndex < 0) {
+        // Before the bind the only player we could read is index 0, the neutral player. Say so
+        // rather than hand the model someone else's cash, base and fog.
+        AsciiString nr;
+        nr.format("{\"ready\":false,\"reason\":\"bridge player not bound yet\",\"frame\":%u,\"match_id\":%u}",
+                  (unsigned)TheGameLogic->getFrame(), (unsigned)m_matchId);
+        result = nr;
+      } else {
+        result = observe(m_bridgePlayerIndex);
+        if (result.isEmpty()) {
+          AsciiString nr;
+          nr.format("{\"ready\":false,\"reason\":\"bound player not found\",\"frame\":%u,\"match_id\":%u}",
+                    (unsigned)TheGameLogic->getFrame(), (unsigned)m_matchId);
+          result = nr;
+        }
+      }
+    } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout" ||
+               op == "build_now" || op == "train_now") {
       result = apply(op, buf);
     } else {
       result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
@@ -679,15 +818,53 @@ AsciiString ControlBridge::observe(Int playerIndex)
 
   AsciiString tmp;
 
+  // Combat state (live match 2026-09-24: the base was dismantled while this said false).
+  const UnsignedInt now = TheGameLogic->getFrame();
+  const UnsignedInt atk = me->getAttackedFrame();
+  const Bool everAttacked = atk != 0;
+  const Real agoSec = everAttacked ? (Real)(now - atk) / LOGICFRAMES_PER_SECOND : -1.0f;
+  const Bool underAttack = everAttacked && agoSec <= 10.0f;
+  // attackers_this_match: cumulative for the whole match (Player::m_attackedBy[] has no
+  // timestamps), enemies only — same relationship test the enemy section below uses, so a
+  // teammate or self hit (ActiveBody.cpp:607 sets the flag with no relationship check) never
+  // appears here. Recency is what under_attack/last_attacked_seconds_ago are for.
+  AsciiString attackers = "[";
+  for (Int pi = 0, n = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+    if (pi == playerIndex || !me->getAttackedBy(pi)) continue;
+    Player* attacker = ThePlayerList->getNthPlayer(pi);
+    if (!attacker || me->getRelationship(attacker->getDefaultTeam()) != ENEMIES) continue;
+    AsciiString one; one.format("%s%d", n++ ? "," : "", pi); attackers.concat(one);
+  }
+  attackers.concat("]");
+
+  // Match result (Task 6): derived from TheVictoryConditions, not a constant.
+  const char* match = "ongoing";
+  if (TheVictoryConditions) {
+    if (TheVictoryConditions->hasAchievedVictory(me)) match = "won";
+    else if (TheVictoryConditions->hasBeenDefeated(me)) match = "lost";
+  }
+
+  // speed (finding D): real logic-time scale, not a hard-coded 1.00. Slow-mo (-slowmo/-bridge)
+  // only takes effect when m_wasmSlowmoSkirmish is set AND the requested fps is below real time
+  // (GameEngine.cpp:1014-1019); mirror that gate here rather than reporting m_wasmSlowmoFps/30
+  // unconditionally (e.g. -slowmofps 30 or slow-mo simply off must both read as 1.00).
+  Real speed = 1.0f;
+  if (TheGlobalData && TheGlobalData->m_wasmSlowmoSkirmish &&
+      TheGlobalData->m_wasmSlowmoFps > 0 && TheGlobalData->m_wasmSlowmoFps < LOGICFRAMES_PER_SECOND) {
+    speed = (Real)TheGlobalData->m_wasmSlowmoFps / (Real)LOGICFRAMES_PER_SECOND;
+  }
+
   // Top-level + self.
-  tmp.format("{\"frame\":%u,\"speed\":%.2f,\"match\":\"ongoing\",\"self\":{\"faction\":\"",
-             (unsigned)TheGameLogic->getFrame(), 1.0f);
+  tmp.format("{\"ready\":true,\"frame\":%u,\"match_id\":%u,\"speed\":%.2f,\"match\":\"%s\",\"self\":{\"faction\":\"",
+             (unsigned)TheGameLogic->getFrame(), (unsigned)m_matchId, speed, match);
   j.concat(tmp);
   jsonEscape(j, me->getSide().str());
   tmp.format("\",\"cash\":%u,\"power\":{\"produced\":%d,\"consumed\":%d,\"surplus\":%d},"
-             "\"under_attack\":false}",
-             (unsigned)cash, produced, consumed, surplus);
+             "\"under_attack\":%s,\"last_attacked_seconds_ago\":",
+             (unsigned)cash, produced, consumed, surplus, underAttack ? "true" : "false");
   j.concat(tmp);
+  if (everAttacked) { tmp.format("%.1f", agoSec); j.concat(tmp); } else j.concat("null");
+  j.concat(",\"attackers_this_match\":"); j.concat(attackers); j.concat("}");
 
   // economy (income + collector count are real; supply-dock detail is v2).
   tmp.format(",\"economy\":{\"supply_collectors\":%d,\"income_per_min\":%d}",
@@ -704,19 +881,66 @@ AsciiString ControlBridge::observe(Int playerIndex)
   writeCountMap(j, own.unitsByType);
   j.concat(",\"teams\":[]}");
 
-  // production (ProductionUpdate scrape is v2).
-  j.concat(",\"production\":[]");
+  // production (Task 7): scrape each own object's ProductionUpdateInterface queue.
+  ProdAccum pa; pa.n = 0; me->iterateObjects(prodCb, &pa);
+  j.concat(",\"production\":["); j.concat(pa.json); j.concat("]");
+
+  // build_plan: the AI's own build list, in order. `queued` is the priority flag build_now
+  // sets, so it is the direct read-back of a build_now order (Follow-up Task 2). The engine
+  // never clears that flag, so a finished entry keeps queued:true for the rest of the match.
+  // `built` = a live object exists for the entry (construction started); `under_construction`
+  // tells a scaffold from a finished structure. AIPlayer::processBaseBuilding re-points a
+  // destroyed GLA entry's object id at its rebuild hole, which runs its own rebuild
+  // (RebuildHoleBehavior); build_now above treats that object as "already built", so the
+  // snapshot agrees: a hole is built:true, under_construction:true.
+  j.concat(",\"build_plan\":[");
+  Bool firstB = TRUE;
+  for (BuildListInfo* n = me->getBuildList(); n; n = n->getNext()) {
+    if (!firstB) j.concat(',');
+    firstB = FALSE;
+    const Object* bo = TheGameLogic->findObjectByID(n->getObjectID());
+    const Bool built = bo != NULL;
+    const Bool underConstruction = built && (bo->isKindOf(KINDOF_REBUILD_HOLE) || bo->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION));
+    j.concat("{\"template\":\""); jsonEscape(j, n->getTemplateName().str());
+    tmp.format("\",\"built\":%s,\"under_construction\":%s,\"queued\":%s}",
+               built ? "true" : "false", underConstruction ? "true" : "false", n->isPriorityBuild() ? "true" : "false");
+    j.concat(tmp);
+  }
+  j.concat("]");
+
+  // team_queue: the AI's team build queue (AIPlayer::m_TeamBuildQueue), head first. `priority`
+  // is TeamInQueue::m_priorityBuild, which only buildSpecificAITeam(proto, true) sets -- the
+  // call train_now makes through Player::buildSpecificTeam; the AI's own queuing passes false.
+  // The engine never clears the flag on a queued entry; the entry leaves this queue when its
+  // team is fully built, its build time expires, or the team is destroyed. [] without an AI.
+  j.concat(",\"team_queue\":[");
+  if (AIPlayer* ai = me->getAIPlayer()) {
+    Bool firstT = TRUE;
+    for (DLINK_ITERATOR<TeamInQueue> it = ai->iterate_TeamBuildQueue(); !it.done(); it.advance()) {
+      const TeamInQueue* tq = it.cur();
+      if (!tq) continue;
+      if (!firstT) j.concat(',');
+      firstT = FALSE;
+      j.concat("{\"team\":\"");
+      if (tq->m_team) jsonEscape(j, tq->m_team->getName().str());
+      tmp.format("\",\"priority\":%s}", tq->m_priorityBuild ? "true" : "false");
+      j.concat(tmp);
+    }
+  }
+  j.concat("]");
 
   // enemy — fog-limited. One entry per enemy player; tallies count ONLY objects
   // currently visible to the observer (see enemyObjectCb's shroud gate).
   j.concat(",\"enemy\":{\"players\":[");
   Bool firstEnemy = TRUE;
+  StructPosAccum mine; me->iterateObjects(structPosCb, &mine);
   for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
     Player* other = ThePlayerList->getNthPlayer(pi);
     if (!other || other == me) continue;
     if (me->getRelationship(other->getDefaultTeam()) != ENEMIES) continue;
 
     EnemyAccum ea; ea.observerIndex = playerIndex; ea.visibleObjects = 0;
+    ea.myStructures = &mine.pos;
     other->iterateObjects(enemyObjectCb, &ea);
 
     if (!firstEnemy) j.concat(',');
@@ -731,14 +955,54 @@ AsciiString ControlBridge::observe(Int playerIndex)
     writeCountMap(j, ea.structures);
     j.concat(",\"army_seen\":");
     writeCountMap(j, ea.army);
-    tmp.format("},\"visible_objects\":%d,\"threats_near_me\":[]}", ea.visibleObjects);
+    std::sort(ea.threats.begin(), ea.threats.end(),
+              [](const CountEntry& a, const CountEntry& b){ return a.count > b.count; });
+    tmp.format("},\"visible_objects\":%d,\"threats_near_me\":[", ea.visibleObjects);
     j.concat(tmp);
+    for (size_t t = 0; t < ea.threats.size(); ++t) {
+      if (t) j.concat(',');
+      j.concat("{\"type\":\""); jsonEscape(j, ea.threats[t].name.str());
+      AsciiString c; c.format("\",\"count\":%d}", ea.threats[t].count); j.concat(c);
+    }
+    j.concat("]}");
   }
   j.concat("]}");
 
-  // map — named regions derived at init() (waypoints + polygon triggers).
+  // losses — cumulative + deltas since the last observe (Task 4). Baseline rule: the first
+  // observe after a bind (m_haveLastLosses false) reports deltas equal to the cumulative
+  // values, so summing every reply's deltas always reproduces the cumulative counters.
+  ScoreKeeper* sk = me->getScoreKeeper();
+  LossCounters cur = { sk->getTotalUnitsLost(), sk->getTotalBuildingsLost(), sk->getTotalUnitsDestroyed(),
+                       sk->getTotalBuildingsDestroyed(), sk->getTotalUnitsBuilt(), sk->getTotalBuildingsBuilt() };
+  const LossCounters base = m_haveLastLosses ? m_lastLosses : LossCounters{0,0,0,0,0,0};
+  tmp.format(",\"losses\":{\"units_lost\":%d,\"buildings_lost\":%d,\"units_destroyed\":%d,"
+             "\"buildings_destroyed\":%d,\"units_built\":%d,\"buildings_built\":%d}",
+             cur.unitsLost, cur.buildingsLost, cur.unitsDestroyed, cur.buildingsDestroyed, cur.unitsBuilt, cur.buildingsBuilt);
+  j.concat(tmp);
+  tmp.format(",\"losses_since_last_observe\":{\"units_lost\":%d,\"buildings_lost\":%d,\"units_destroyed\":%d,"
+             "\"buildings_destroyed\":%d,\"units_built\":%d,\"buildings_built\":%d}",
+             cur.unitsLost - base.unitsLost, cur.buildingsLost - base.buildingsLost,
+             cur.unitsDestroyed - base.unitsDestroyed, cur.buildingsDestroyed - base.buildingsDestroyed,
+             cur.unitsBuilt - base.unitsBuilt, cur.buildingsBuilt - base.buildingsBuilt);
+  j.concat(tmp);
+  m_lastLosses = cur; m_haveLastLosses = true;
+
+  // map — named regions derived at init() (waypoints + polygon triggers), with
+  // Task 8's semantic aliases ("my_base", "enemy_start_N") listed first.
+  resolveMyStart(me);
   j.concat(",\"map\":{\"regions\":[");
   Bool firstR = TRUE;
+  // Fix round 1 (Important #1): while m_myStart is unresolved (-1) we don't yet
+  // know which start is ours, so emitting the OTHER starts as "enemy_start_N"
+  // would risk labeling our own base as an enemy's. Emit NO start aliases at
+  // all until my_base resolves; raw region names are unaffected.
+  if (m_myStart >= 0) {
+    j.concat("\"my_base\""); firstR = FALSE;
+    for (size_t i = 0, e = 1; i < m_starts.size(); ++i) {
+      if ((Int)i == m_myStart) continue;
+      AsciiString a; a.format("%s\"enemy_start_%u\"", firstR ? "" : ",", (unsigned)e++); j.concat(a); firstR = FALSE;
+    }
+  }
   for (const BridgeRegion& r : m_regions) {
     if (!firstR) j.concat(',');
     firstR = FALSE;
@@ -845,7 +1109,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     // 6) Derive applied_order by READING BACK the actual mutated list head (the
     //    first `matched` nodes), so the echo proves the mutation, not the request.
-    AsciiString result = "{\"accepted\":true,\"applied_order\":[";
+    AsciiString result = "{\"accepted\":true,\"effect\":\"priority_changed\",\"applied_order\":[";
     Bool first = TRUE;
     Int emitted = 0;
     for (BuildListInfo* n = p->getBuildList(); n && emitted < matched;
@@ -939,7 +1203,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     // 5) active_teams is read back from the ACTUAL mutated prototypes (name +
     //    resulting priority), proving the change rather than echoing the ask.
-    AsciiString result = "{\"accepted\":true,\"active_teams\":[";
+    AsciiString result = "{\"accepted\":true,\"effect\":\"priority_changed\",\"active_teams\":[";
     Bool first = TRUE;
     for (TeamPrototype* proto : touched) {
       if (!first) result.concat(',');
@@ -974,6 +1238,13 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     // 2) Resolve the region -> its center Coord3D (regions come from Task 1.1's
     //    waypoint/polygon derivation). Unknown name is a hard reject.
+    // Task 5: resolveMyStart() used to run only from observe(), so "my_base"/
+    // "enemy_start_N" aliases were unresolved (and refused as unknown-region)
+    // until an observe had been sent at least once. Resolve here too, before
+    // regionByName, so the very first order can use them. Idempotent and safe
+    // when the bridge player's command center doesn't exist yet (no-op).
+    if (m_bridgePlayerIndex >= 0 && ThePlayerList)
+      resolveMyStart(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
     const BridgeRegion* region = regionByName(targetRegion);
     if (!region)
       return "{\"accepted\":false,\"reason\":\"unknown region\"}";
@@ -1047,15 +1318,18 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     }
 
     fprintf(stderr, "[BRIDGE] attack: committed %d unit(s) of player %d to region '%s'%s\n",
-            committed, idx, region->name.str(), fogged ? " (into fog)" : "");
+            committed, idx, targetRegion.str(), fogged ? " (into fog)" : "");
     fflush(stderr);
 
-    // 6) Result. teams_committed = the number of units we actually ordered.
-    AsciiString result = "{\"accepted\":true,\"teams_committed\":";
+    // 6) Result. teams_committed = the number of units we actually ordered. Echo
+    //    the REQUESTED name (Task 8), not region->name, so an alias like
+    //    "enemy_start_1" comes back as itself rather than the underlying
+    //    "Player_N_Start" waypoint name.
+    AsciiString result = "{\"accepted\":true,\"effect\":\"units_ordered\",\"teams_committed\":";
     AsciiString num; num.format("%d", committed);
     result.concat(num);
     result.concat(",\"target\":\"");
-    jsonEscape(result, region->name.str());
+    jsonEscape(result, targetRegion.str());
     result.concat("\"");
     if (fogged)
       result.concat(",\"warning\":\"target_region not currently visible \\u2014 "
@@ -1081,6 +1355,10 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
       return "{\"accepted\":false,\"reason\":\"missing args.region\"}";
 
     // 2) Resolve the region -> its center Coord3D. Unknown name is a hard reject.
+    // Task 5: resolve "my_base"/"enemy_start_N" before the first observe too --
+    // see the matching comment in the `attack` branch above.
+    if (m_bridgePlayerIndex >= 0 && ThePlayerList)
+      resolveMyStart(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
     const BridgeRegion* region = regionByName(regionName);
     if (!region)
       return "{\"accepted\":false,\"reason\":\"unknown region\"}";
@@ -1124,15 +1402,127 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     const char* tmplName = tt ? tt->getName().str() : "";
 
     fprintf(stderr, "[BRIDGE] scout: dispatched '%s' to region '%s'\n",
-            tmplName, region->name.str());
+            tmplName, regionName.str());
     fflush(stderr);
 
-    // 5) Result.
-    AsciiString result = "{\"accepted\":true,\"scout_dispatched\":\"";
+    // 5) Result. Echo the REQUESTED name (Task 8), not region->name, so an
+    //    alias like "enemy_start_1" comes back as itself.
+    AsciiString result = "{\"accepted\":true,\"effect\":\"units_ordered\",\"scout_dispatched\":\"";
     jsonEscape(result, tmplName);
     result.concat("\",\"region\":\"");
-    jsonEscape(result, region->name.str());
+    jsonEscape(result, regionName.str());
     result.concat("\"}");
+    return result;
+  }
+
+  if (op == "build_now" || op == "train_now") {
+    // Direct ops (Task 9): unlike set_build_list/set_team_priorities (which only
+    // nudge a PRIORITY the AI acts on at its own pace), these call the same
+    // public script-engine forwarders the map script engine uses
+    // (Player::buildSpecificBuilding / Player::buildSpecificTeam) to tell the
+    // bridge player's AI to start this specific thing as soon as it can.
+    const Bool building = op == "build_now";
+    AsciiString want;
+    const char* argsVal = jsonFindValue(req, "args");
+    if (argsVal && *argsVal == '{') {
+      const char* argsEnd = jsonMatchBracket(argsVal);
+      if (argsEnd) jsonReadStrIn(argsVal, argsEnd, building ? "structure" : "unit", want);
+    }
+    if (want.isEmpty())
+      return building ? "{\"accepted\":false,\"reason\":\"missing args.structure\"}"
+                      : "{\"accepted\":false,\"reason\":\"missing args.unit\"}";
+    Player* p = (ThePlayerList && m_bridgePlayerIndex >= 0) ? ThePlayerList->getNthPlayer(m_bridgePlayerIndex) : NULL;
+    if (!p) return "{\"accepted\":false,\"reason\":\"bridge player not bound yet\"}";
+
+    AsciiString result;
+    if (building) {
+      // Finding A: mirror AISkirmishPlayer::buildSpecificAIBuilding's OWN precondition
+      // (AISkirmishPlayer.cpp:409-445) before calling it, instead of always claiming
+      // "requested_now". That function marks only the first build-list entry that is
+      // BOTH not-yet-built (no live Object for its BuildListInfo::getObjectID()) AND not
+      // already flagged isPriorityBuild(); if every matching entry fails that test it logs
+      // "already built or queued" and does nothing -- silently. Find such an entry
+      // ourselves so we can tell the caller apart from a real accept.
+      AsciiString tmpl;
+      Bool anyMatch = FALSE;
+      for (BuildListInfo* n = p->getBuildList(); n; n = n->getNext()) {
+        if (!templateMatchesRequest(n->getTemplateName().str(), want)) continue;
+        anyMatch = TRUE;
+        if (TheGameLogic->findObjectByID(n->getObjectID())) continue;   // already built
+        if (n->isPriorityBuild())                          continue;   // already queued
+        tmpl = n->getTemplateName();
+        break;
+      }
+      if (tmpl.isEmpty()) {
+        result = "{\"accepted\":false,\"reason\":\"";
+        if (!anyMatch) {
+          jsonEscape(result, want.str());
+          result.concat(" is not in this faction's build list\"}");
+        } else {
+          result.concat("every ");
+          jsonEscape(result, want.str());
+          result.concat(" in the build list is already built or queued\"}");
+        }
+        return result;
+      }
+      p->buildSpecificBuilding(tmpl);
+      result = "{\"accepted\":true,\"effect\":\"requested_now\",\"template\":\""; jsonEscape(result, tmpl.str()); result.concat("\"}");
+    } else {
+      TeamPrototype* hit = NULL;
+      for (TeamPrototype* proto : *p->getPlayerTeams()) {
+        const TeamTemplateInfo* ti = proto ? proto->getTemplateInfo() : NULL;
+        if (!ti) continue;
+        for (Int u = 0; u < ti->m_numUnitsInfo && !hit; ++u)
+          if (unitTemplateMatchesRequest(ti->m_unitsInfo[u].unitThingName.str(), want)) hit = proto;
+        if (hit) break;
+      }
+      if (!hit) {
+        result = "{\"accepted\":false,\"reason\":\"no team trains "; jsonEscape(result, want.str()); result.concat("\"}");
+        return result;
+      }
+
+      // Finding A: mirror AIPlayer::buildSpecificAITeam's preconditions (AIPlayer.cpp:
+      // 2435-2477) before calling Player::buildSpecificTeam(hit) (which always does a
+      // priorityBuild=true call, so it queues unconditionally unless we refuse first).
+      // We reproduce ONLY the checks that make it return without queueing (the ones that
+      // don't touch protected AIPlayer state and have no side effects to evaluate):
+      //   1) getCanBuildUnits() must be true.
+      //   2) a singleton team whose Team instance already has objects can't be re-queued.
+      //   3) isPossibleToBuildTeam(hit, requireIdleFactory=false, needMoney) — its ONLY
+      //      false-returning branch reachable with requireIdleFactory=false is "some unit
+      //      type in the team has no factory at all" (findFactory(thing,true)==NULL); the
+      //      not-enough-money branch still queues (buildSpecificAITeam queues anyway and
+      //      just logs a note), so it is not a rejection case and is deliberately not
+      //      reproduced here.
+      const TeamTemplateInfo* ti = hit->getTemplateInfo();
+      const char* why = NULL;
+      if (!p->getCanBuildUnits()) {
+        why = "unit building is disabled for this player";
+      } else if (hit->getIsSingleton()) {
+        Team* singleton = TheTeamFactory ? TheTeamFactory->findTeam(hit->getName()) : NULL;
+        if (singleton && singleton->hasAnyObjects()) why = "singleton team already exists";
+      }
+      if (!why) {
+        const Int n = (ti->m_numUnitsInfo < (Int)TeamTemplateInfo::MAX_UNIT_TYPES)
+                        ? ti->m_numUnitsInfo : (Int)TeamTemplateInfo::MAX_UNIT_TYPES;
+        for (Int u = 0; u < n; ++u) {
+          const ThingTemplate* thing = TheThingFactory ? TheThingFactory->findTemplate(ti->m_unitsInfo[u].unitThingName) : NULL;
+          if (!thing) continue;
+          if (!hasFactoryForThing(p, thing)) { why = "required factories/tech missing"; break; }
+        }
+      }
+      if (why) {
+        result = "{\"accepted\":false,\"reason\":\"cannot train ";
+        jsonEscape(result, hit->getName().str());
+        result.concat(" now: ");
+        jsonEscape(result, why);
+        result.concat("\"}");
+        return result;
+      }
+
+      p->buildSpecificTeam(hit);
+      result = "{\"accepted\":true,\"effect\":\"requested_now\",\"team\":\""; jsonEscape(result, hit->getName().str()); result.concat("\"}");
+    }
     return result;
   }
 
@@ -1141,6 +1531,21 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
 const BridgeRegion* ControlBridge::regionByName(const AsciiString& n) const
 {
+  // Task 8: semantic aliases resolve first ("my_base", "enemy_start_N"), ahead
+  // of the raw waypoint/trigger lookup.
+  if (n == "my_base") return m_myStart >= 0 ? &m_starts[m_myStart] : NULL;
+  if (n.startsWith("enemy_start_")) {
+    // Fix round 1 (Important #1): until my_base resolves we don't know which
+    // start is ours, so no start can be safely labeled an enemy's yet.
+    if (m_myStart < 0) return NULL;
+    if (!isAllDigits(n.str() + 12)) return NULL;   // reject "enemy_start_1abc" etc.
+    Int want = atoi(n.str() + 12), e = 0;
+    for (size_t i = 0; i < m_starts.size(); ++i) {
+      if ((Int)i == m_myStart) continue;
+      if (++e == want) return &m_starts[i];
+    }
+    return NULL;
+  }
   for (const BridgeRegion& r : m_regions) if (r.name == n) return &r;
   return NULL;
 }
