@@ -726,7 +726,8 @@ void ControlBridge::tick()
         result = observe(m_bridgePlayerIndex);
         if (result.isEmpty()) result = "{\"ready\":false,\"reason\":\"bound player not found\"}";
       }
-    } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout") {
+    } else if (op == "set_build_list" || op == "set_team_priorities" || op == "attack" || op == "scout" ||
+               op == "build_now" || op == "train_now") {
       result = apply(op, buf);
     } else {
       result = "{\"accepted\":false,\"reason\":\"op not implemented (Phase 3)\"}";
@@ -998,7 +999,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     // 6) Derive applied_order by READING BACK the actual mutated list head (the
     //    first `matched` nodes), so the echo proves the mutation, not the request.
-    AsciiString result = "{\"accepted\":true,\"applied_order\":[";
+    AsciiString result = "{\"accepted\":true,\"effect\":\"priority_changed\",\"applied_order\":[";
     Bool first = TRUE;
     Int emitted = 0;
     for (BuildListInfo* n = p->getBuildList(); n && emitted < matched;
@@ -1092,7 +1093,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     // 5) active_teams is read back from the ACTUAL mutated prototypes (name +
     //    resulting priority), proving the change rather than echoing the ask.
-    AsciiString result = "{\"accepted\":true,\"active_teams\":[";
+    AsciiString result = "{\"accepted\":true,\"effect\":\"priority_changed\",\"active_teams\":[";
     Bool first = TRUE;
     for (TeamPrototype* proto : touched) {
       if (!first) result.concat(',');
@@ -1207,7 +1208,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     //    the REQUESTED name (Task 8), not region->name, so an alias like
     //    "enemy_start_1" comes back as itself rather than the underlying
     //    "Player_N_Start" waypoint name.
-    AsciiString result = "{\"accepted\":true,\"teams_committed\":";
+    AsciiString result = "{\"accepted\":true,\"effect\":\"units_ordered\",\"teams_committed\":";
     AsciiString num; num.format("%d", committed);
     result.concat(num);
     result.concat(",\"target\":\"");
@@ -1285,11 +1286,61 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
     // 5) Result. Echo the REQUESTED name (Task 8), not region->name, so an
     //    alias like "enemy_start_1" comes back as itself.
-    AsciiString result = "{\"accepted\":true,\"scout_dispatched\":\"";
+    AsciiString result = "{\"accepted\":true,\"effect\":\"units_ordered\",\"scout_dispatched\":\"";
     jsonEscape(result, tmplName);
     result.concat("\",\"region\":\"");
     jsonEscape(result, regionName.str());
     result.concat("\"}");
+    return result;
+  }
+
+  if (op == "build_now" || op == "train_now") {
+    // Direct ops (Task 9): unlike set_build_list/set_team_priorities (which only
+    // nudge a PRIORITY the AI acts on at its own pace), these call the same
+    // public script-engine forwarders the map script engine uses
+    // (Player::buildSpecificBuilding / Player::buildSpecificTeam) to tell the
+    // bridge player's AI to start this specific thing as soon as it can.
+    const Bool building = op == "build_now";
+    AsciiString want;
+    const char* argsVal = jsonFindValue(req, "args");
+    if (argsVal && *argsVal == '{') {
+      const char* argsEnd = jsonMatchBracket(argsVal);
+      if (argsEnd) jsonReadStrIn(argsVal, argsEnd, building ? "structure" : "unit", want);
+    }
+    if (want.isEmpty())
+      return building ? "{\"accepted\":false,\"reason\":\"missing args.structure\"}"
+                      : "{\"accepted\":false,\"reason\":\"missing args.unit\"}";
+    Player* p = (ThePlayerList && m_bridgePlayerIndex >= 0) ? ThePlayerList->getNthPlayer(m_bridgePlayerIndex) : NULL;
+    if (!p) return "{\"accepted\":false,\"reason\":\"bridge player not bound yet\"}";
+
+    AsciiString result;
+    if (building) {
+      AsciiString tmpl;
+      for (BuildListInfo* n = p->getBuildList(); n && tmpl.isEmpty(); n = n->getNext())
+        if (templateMatchesRequest(n->getTemplateName().str(), want)) tmpl = n->getTemplateName();
+      if (tmpl.isEmpty()) {
+        result = "{\"accepted\":false,\"reason\":\""; jsonEscape(result, want.str());
+        result.concat(" is not in this faction's build list\"}");
+        return result;
+      }
+      p->buildSpecificBuilding(tmpl);
+      result = "{\"accepted\":true,\"effect\":\"requested_now\",\"template\":\""; jsonEscape(result, tmpl.str()); result.concat("\"}");
+    } else {
+      TeamPrototype* hit = NULL;
+      for (TeamPrototype* proto : *p->getPlayerTeams()) {
+        const TeamTemplateInfo* ti = proto ? proto->getTemplateInfo() : NULL;
+        if (!ti) continue;
+        for (Int u = 0; u < ti->m_numUnitsInfo && !hit; ++u)
+          if (unitTemplateMatchesRequest(ti->m_unitsInfo[u].unitThingName.str(), want)) hit = proto;
+        if (hit) break;
+      }
+      if (!hit) {
+        result = "{\"accepted\":false,\"reason\":\"no team trains "; jsonEscape(result, want.str()); result.concat("\"}");
+        return result;
+      }
+      p->buildSpecificTeam(hit);
+      result = "{\"accepted\":true,\"effect\":\"requested_now\",\"team\":\""; jsonEscape(result, hit->getName().str()); result.concat("\"}");
+    }
     return result;
   }
 
