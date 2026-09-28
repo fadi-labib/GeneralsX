@@ -1597,26 +1597,33 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 const BridgeRegion* ControlBridge::regionByName(const AsciiString& n) const
 {
   // Task 8: semantic aliases resolve first ("my_base", "enemy_start_N", "start_N"), ahead
-  // of the raw waypoint/trigger lookup.
-  if (n == "my_base") return m_myStart >= 0 ? &m_starts[m_myStart] : NULL;
-  if (n.startsWith("enemy_start_")) {
+  // of the raw waypoint/trigger lookup. Fix round C (fall-through): an alias that fails to
+  // RESOLVE (the bind hasn't happened yet, the suffix doesn't parse, or the number is out of
+  // range) used to return NULL right there. That permanently shadowed any RAW waypoint or
+  // trigger literally named "my_base", "enemy_start_N" or "start_N" on some map -- it could
+  // never be targeted, because the alias branch always intercepted the name first and always
+  // refused instead of trying the raw lookup below. Now an unresolved alias falls through to
+  // the raw-name lookup instead of refusing outright. A RESOLVED alias still wins (returns
+  // immediately, never reaching the raw lookup); an unresolved alias with no raw match of the
+  // same name still refuses, same as before (the raw lookup returns NULL too).
+  if (n == "my_base") {
+    if (m_myStart >= 0) return &m_starts[m_myStart];
+  } else if (n.startsWith("enemy_start_")) {
     // Fix round 1 (Important #1): until my_base resolves we don't know which
     // start is ours, so no start can be safely labeled an enemy's yet.
-    if (m_myStart < 0) return NULL;
-    if (!isAllDigits(n.str() + 12)) return NULL;   // reject "enemy_start_1abc" etc.
-    // Round B: only resolved enemy players' starts (see resolveStarts).
-    const Int want = atoi(n.str() + 12);
-    if (want < 1 || want > (Int)m_enemyStarts.size()) return NULL;
-    return &m_starts[m_enemyStarts[want - 1]];
-  }
-  if (n.startsWith("start_")) {
+    if (m_myStart >= 0 && isAllDigits(n.str() + 12)) {   // reject "enemy_start_1abc" etc.
+      // Round B: only resolved enemy players' starts (see resolveStarts).
+      const Int want = atoi(n.str() + 12);
+      if (want >= 1 && want <= (Int)m_enemyStarts.size()) return &m_starts[m_enemyStarts[want - 1]];
+    }
+  } else if (n.startsWith("start_")) {
     // Round B: a start nobody resolved, by its waypoint number; exactly the start_N the
     // snapshot lists (a start claimed as my_base or enemy_start_N no longer answers here).
-    if (m_myStart < 0 || !isAllDigits(n.str() + 6)) return NULL;
-    const Int want = atoi(n.str() + 6);
-    for (size_t i = 0; i < m_starts.size(); ++i)
-      if (m_startNum[i] == want && m_startOwner[i] < 0) return &m_starts[i];
-    return NULL;
+    if (m_myStart >= 0 && isAllDigits(n.str() + 6)) {
+      const Int want = atoi(n.str() + 6);
+      for (size_t i = 0; i < m_starts.size(); ++i)
+        if (m_startNum[i] == want && m_startOwner[i] < 0) return &m_starts[i];
+    }
   }
   for (const BridgeRegion& r : m_regions) if (r.name == n) return &r;
   return NULL;
