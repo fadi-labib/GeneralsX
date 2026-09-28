@@ -271,11 +271,13 @@ void ControlBridge::init(Bool active)
   // "my_base" and "enemy_start_N" ahead of the ~250 raw waypoint/trigger names.
   // m_myStart is resolved lazily (resolveMyStart) once the bridge player's command
   // center exists, which is after the bind -- never here.
-  m_starts.clear(); m_myStart = -1;
+  m_starts.clear(); m_startNum.clear(); m_myStart = -1;
+  m_startOwner.clear(); m_enemyStarts.clear();
   for (Int n = 1; n <= MAX_PLAYER_COUNT; ++n) {
     AsciiString wn; wn.format("Player_%d_Start", n);
-    for (const BridgeRegion& r : m_regions) if (r.name == wn) { m_starts.push_back(r); break; }
+    for (const BridgeRegion& r : m_regions) if (r.name == wn) { m_starts.push_back(r); m_startNum.push_back(n); break; }
   }
+  m_startOwner.assign(m_starts.size(), -1);
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +300,51 @@ void ControlBridge::resolveMyStart(Player* me)
   for (size_t i = 0; i < m_starts.size(); ++i) {
     const Real dx = m_starts[i].center.x - cc.p.x, dy = m_starts[i].center.y - cc.p.y, d = dx*dx + dy*dy;
     if (d < best) { best = d; m_myStart = (Int)i; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resolveStarts (Round B): my_base first (resolveMyStart), then one start per ENEMY
+// player. The old rule -- "every start except ours is enemy_start_N" -- pointed the model
+// at empty starts on maps with unused slots and at friendly ones with allies. Now, for
+// each player we are ENEMIES with (the same test the snapshot's enemy.players uses),
+// find that player's command center and take the nearest start nobody owns yet. Lazy
+// like my_base: a player with no command center yet is retried on the next call. Once
+// resolved, the start stays that player's for the match (a destroyed command center
+// keeps its alias), so enemy_start_N numbers are append-only in resolution order
+// (player-index order among those resolved in the same call) and never renumber.
+// Starts that end up with no owner are emitted as start_<waypoint number>.
+// Nothing resolves until my_base does: an enemy's nearest start must exclude ours.
+// ---------------------------------------------------------------------------
+void ControlBridge::resolveStarts(Player* me)
+{
+  resolveMyStart(me);
+  if (m_myStart < 0 || !me || !ThePlayerList) return;
+  if (m_startOwner.size() != m_starts.size()) m_startOwner.assign(m_starts.size(), -1);
+  m_startOwner[m_myStart] = me->getPlayerIndex();
+  if (m_enemyStarts.size() + 1 >= m_starts.size()) return;   // every start already claimed
+  for (Int pi = 0; pi < ThePlayerList->getPlayerCount(); ++pi) {
+    Player* other = ThePlayerList->getNthPlayer(pi);
+    if (!other || other == me) continue;
+    if (me->getRelationship(other->getDefaultTeam()) != ENEMIES) continue;
+    Bool have = FALSE;
+    for (Int e : m_enemyStarts) if (m_startOwner[e] == pi) { have = TRUE; break; }
+    if (have) continue;
+    struct CC { Coord3D p; Bool found; } cc = { {0,0,0}, FALSE };
+    other->iterateObjects([](Object* o, void* ud) {
+      CC* c = (CC*)ud;
+      if (!c->found && o && o->isKindOf(KINDOF_COMMANDCENTER)) { c->p = *o->getPosition(); c->found = TRUE; }
+    }, &cc);
+    if (!cc.found) continue;   // try again next call
+    Int pick = -1; Real best = 1e30f;
+    for (size_t i = 0; i < m_starts.size(); ++i) {
+      if (m_startOwner[i] >= 0) continue;   // ours or another enemy's
+      const Real dx = m_starts[i].center.x - cc.p.x, dy = m_starts[i].center.y - cc.p.y, d = dx*dx + dy*dy;
+      if (d < best) { best = d; pick = (Int)i; }
+    }
+    if (pick < 0) return;   // no unowned start left
+    m_startOwner[pick] = pi;
+    m_enemyStarts.push_back(pick);
   }
 }
 
@@ -892,7 +939,9 @@ AsciiString ControlBridge::observe(Int playerIndex)
   // tells a scaffold from a finished structure. AIPlayer::processBaseBuilding re-points a
   // destroyed GLA entry's object id at its rebuild hole, which runs its own rebuild
   // (RebuildHoleBehavior); build_now above treats that object as "already built", so the
-  // snapshot agrees: a hole is built:true, under_construction:true.
+  // snapshot agrees: a hole is built:true, under_construction:true. Round B: `rebuilding`
+  // marks that hole (KINDOF_REBUILD_HOLE), so a client can tell a destroyed GLA building
+  // rebuilding itself from a newly started scaffold.
   j.concat(",\"build_plan\":[");
   Bool firstB = TRUE;
   for (BuildListInfo* n = me->getBuildList(); n; n = n->getNext()) {
@@ -900,10 +949,12 @@ AsciiString ControlBridge::observe(Int playerIndex)
     firstB = FALSE;
     const Object* bo = TheGameLogic->findObjectByID(n->getObjectID());
     const Bool built = bo != NULL;
-    const Bool underConstruction = built && (bo->isKindOf(KINDOF_REBUILD_HOLE) || bo->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION));
+    const Bool hole = built && bo->isKindOf(KINDOF_REBUILD_HOLE);
+    const Bool underConstruction = built && (hole || bo->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION));
     j.concat("{\"template\":\""); jsonEscape(j, n->getTemplateName().str());
-    tmp.format("\",\"built\":%s,\"under_construction\":%s,\"queued\":%s}",
-               built ? "true" : "false", underConstruction ? "true" : "false", n->isPriorityBuild() ? "true" : "false");
+    tmp.format("\",\"built\":%s,\"under_construction\":%s,\"rebuilding\":%s,\"queued\":%s}",
+               built ? "true" : "false", underConstruction ? "true" : "false", hole ? "true" : "false",
+               n->isPriorityBuild() ? "true" : "false");
     j.concat(tmp);
   }
   j.concat("]");
@@ -989,18 +1040,23 @@ AsciiString ControlBridge::observe(Int playerIndex)
 
   // map — named regions derived at init() (waypoints + polygon triggers), with
   // Task 8's semantic aliases ("my_base", "enemy_start_N") listed first.
-  resolveMyStart(me);
+  resolveStarts(me);
   j.concat(",\"map\":{\"regions\":[");
   Bool firstR = TRUE;
   // Fix round 1 (Important #1): while m_myStart is unresolved (-1) we don't yet
   // know which start is ours, so emitting the OTHER starts as "enemy_start_N"
   // would risk labeling our own base as an enemy's. Emit NO start aliases at
   // all until my_base resolves; raw region names are unaffected.
+  // Round B: my_base, then one enemy_start_N per resolved enemy player, then every start
+  // nobody resolved as start_<waypoint number> (Player_3_Start -> start_3).
   if (m_myStart >= 0) {
     j.concat("\"my_base\""); firstR = FALSE;
-    for (size_t i = 0, e = 1; i < m_starts.size(); ++i) {
-      if ((Int)i == m_myStart) continue;
-      AsciiString a; a.format("%s\"enemy_start_%u\"", firstR ? "" : ",", (unsigned)e++); j.concat(a); firstR = FALSE;
+    for (size_t e = 0; e < m_enemyStarts.size(); ++e) {
+      AsciiString a; a.format(",\"enemy_start_%u\"", (unsigned)(e + 1)); j.concat(a);
+    }
+    for (size_t i = 0; i < m_starts.size(); ++i) {
+      if (m_startOwner[i] >= 0) continue;
+      AsciiString a; a.format(",\"start_%d\"", m_startNum[i]); j.concat(a);
     }
   }
   for (const BridgeRegion& r : m_regions) {
@@ -1008,7 +1064,16 @@ AsciiString ControlBridge::observe(Int playerIndex)
     firstR = FALSE;
     j.concat('"'); jsonEscape(j, r.name.str()); j.concat('"');
   }
-  j.concat("]}");
+  // alias_owners: the player index behind my_base and each enemy_start_N, so a client (or a
+  // test) can check a destination against enemy.players[*].player. start_N has no owner.
+  j.concat("],\"alias_owners\":{");
+  if (m_myStart >= 0) {
+    tmp.format("\"my_base\":%d", m_startOwner[m_myStart]); j.concat(tmp);
+    for (size_t e = 0; e < m_enemyStarts.size(); ++e) {
+      tmp.format(",\"enemy_start_%u\":%d", (unsigned)(e + 1), m_startOwner[m_enemyStarts[e]]); j.concat(tmp);
+    }
+  }
+  j.concat("}}");
 
   j.concat("}");
   return j;
@@ -1244,7 +1309,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     // regionByName, so the very first order can use them. Idempotent and safe
     // when the bridge player's command center doesn't exist yet (no-op).
     if (m_bridgePlayerIndex >= 0 && ThePlayerList)
-      resolveMyStart(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
+      resolveStarts(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
     const BridgeRegion* region = regionByName(targetRegion);
     if (!region)
       return "{\"accepted\":false,\"reason\":\"unknown region\"}";
@@ -1358,7 +1423,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
     // Task 5: resolve "my_base"/"enemy_start_N" before the first observe too --
     // see the matching comment in the `attack` branch above.
     if (m_bridgePlayerIndex >= 0 && ThePlayerList)
-      resolveMyStart(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
+      resolveStarts(ThePlayerList->getNthPlayer(m_bridgePlayerIndex));
     const BridgeRegion* region = regionByName(regionName);
     if (!region)
       return "{\"accepted\":false,\"reason\":\"unknown region\"}";
@@ -1531,7 +1596,7 @@ AsciiString ControlBridge::apply(const AsciiString& op, const char* req)
 
 const BridgeRegion* ControlBridge::regionByName(const AsciiString& n) const
 {
-  // Task 8: semantic aliases resolve first ("my_base", "enemy_start_N"), ahead
+  // Task 8: semantic aliases resolve first ("my_base", "enemy_start_N", "start_N"), ahead
   // of the raw waypoint/trigger lookup.
   if (n == "my_base") return m_myStart >= 0 ? &m_starts[m_myStart] : NULL;
   if (n.startsWith("enemy_start_")) {
@@ -1539,11 +1604,18 @@ const BridgeRegion* ControlBridge::regionByName(const AsciiString& n) const
     // start is ours, so no start can be safely labeled an enemy's yet.
     if (m_myStart < 0) return NULL;
     if (!isAllDigits(n.str() + 12)) return NULL;   // reject "enemy_start_1abc" etc.
-    Int want = atoi(n.str() + 12), e = 0;
-    for (size_t i = 0; i < m_starts.size(); ++i) {
-      if ((Int)i == m_myStart) continue;
-      if (++e == want) return &m_starts[i];
-    }
+    // Round B: only resolved enemy players' starts (see resolveStarts).
+    const Int want = atoi(n.str() + 12);
+    if (want < 1 || want > (Int)m_enemyStarts.size()) return NULL;
+    return &m_starts[m_enemyStarts[want - 1]];
+  }
+  if (n.startsWith("start_")) {
+    // Round B: a start nobody resolved, by its waypoint number; exactly the start_N the
+    // snapshot lists (a start claimed as my_base or enemy_start_N no longer answers here).
+    if (m_myStart < 0 || !isAllDigits(n.str() + 6)) return NULL;
+    const Int want = atoi(n.str() + 6);
+    for (size_t i = 0; i < m_starts.size(); ++i)
+      if (m_startNum[i] == want && m_startOwner[i] < 0) return &m_starts[i];
     return NULL;
   }
   for (const BridgeRegion& r : m_regions) if (r.name == n) return &r;

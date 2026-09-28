@@ -22,8 +22,15 @@ public:
 private:
   std::vector<BridgeRegion> m_regions;
   std::vector<BridgeRegion> m_starts;    // Player_N_Start waypoints, in player-number order (Task 8)
+  std::vector<Int> m_startNum;           // waypoint number N of each m_starts entry (Player_N_Start)
   Int  m_myStart = -1;                   // index into m_starts nearest our command center; -1 unresolved
+  // Round B: which player each start belongs to, resolved per player from its command center
+  // (ours -> m_myStart, each ENEMIES player -> one enemy start). -1 = nobody resolved (empty,
+  // allied, or an enemy whose command center was never found). Cached for the whole match.
+  std::vector<Int> m_startOwner;         // parallel to m_starts: owning player index or -1
+  std::vector<Int> m_enemyStarts;        // m_starts indices in enemy_start_N order (N = position + 1)
   void resolveMyStart(Player* me);       // lazily resolves m_myStart on first use after bind
+  void resolveStarts(Player* me);        // resolveMyStart, then each enemy player's start (lazy, cached)
   Int  m_bridgePlayerIndex = -1;
   Bool m_active = TRUE;
   struct LossCounters { Int unitsLost, buildingsLost, unitsDestroyed, buildingsDestroyed, unitsBuilt, buildingsBuilt; };
