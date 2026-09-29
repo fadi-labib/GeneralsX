@@ -1011,11 +1011,12 @@ void GameEngine::init()
 				// full rate; only logic time is scaled. 8 logic fps vs the ~30fps
 				// base is roughly a 0.25x slow-mo. OFF unless -slowmo was passed on
 				// the command line -- a normal launch never touches TheFramePacer here.
-				if (TheGlobalData->m_wasmSlowmoSkirmish && TheFramePacer)
+				if (TheGlobalData->m_wasmSlowmoSkirmish && TheFramePacer
+				    && TheGlobalData->m_wasmSlowmoFps < LOGICFRAMES_PER_SECOND)
 				{
-					TheFramePacer->setLogicTimeScaleFps(8);
+					TheFramePacer->setLogicTimeScaleFps(TheGlobalData->m_wasmSlowmoFps);
 					TheFramePacer->enableLogicTimeScale(TRUE);
-					fprintf(stderr, "[BRIDGE] logic slow-mo enabled: 8 fps\n");
+					fprintf(stderr, "[BRIDGE] logic slow-mo enabled: %d fps\n", TheGlobalData->m_wasmSlowmoFps);
 				}
 
 				// -bridge: LLM-general MCP opt-in. The actual bridge-player binding
