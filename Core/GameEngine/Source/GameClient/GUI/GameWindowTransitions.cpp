@@ -169,9 +169,12 @@ Bool TransitionWindow::init()
 	m_winID = TheNameKeyGenerator->nameToKey(m_winName);
 	m_win		= TheWindowManager->winGetWindowFromId(nullptr, m_winID);
 	m_currentFrameDelay = m_frameDelay;
-//	DEBUG_ASSERTCRASH( m_win, ("TransitionWindow::init Failed to find window %s", m_winName.str()));
-//	if( !m_win )
-//		return FALSE;
+	if (!m_win)
+	{
+		// GeneralsX @bugfix fbraz3 05/11/2026 Issue #381: Warn when a transition references a non-existent window
+		fprintf(stderr, "[WARNING] TransitionWindow::init: Window '%s' not found for transition style %d\n", m_winName.str(), m_style);
+		fflush(stderr);
+	}
 
 	delete m_transition;
 	m_transition = getTransitionForStyle( m_style );
@@ -381,6 +384,17 @@ void TransitionGroup::addWindow( TransitionWindow *transWin )
 	m_transitionWindowList.push_back(transWin);
 }
 
+// GeneralsX @feature fbraz3 14/10/2026 Check if group already contains a window
+Bool TransitionGroup::hasWindow( AsciiString winName )
+{
+	for( TransitionWindowList::iterator it = m_transitionWindowList.begin(); it != m_transitionWindowList.end(); ++it )
+	{
+		if( (*it)->m_winName.compareNoCase( winName ) == 0 )
+			return TRUE;
+	}
+	return FALSE;
+}
+
 //-----------------------------------------------------------------------------
 
 GameWindowTransitionsHandler::GameWindowTransitionsHandler()
@@ -509,6 +523,10 @@ void GameWindowTransitionsHandler::setGroup(AsciiString groupName, Bool immediat
 void GameWindowTransitionsHandler::reverse( AsciiString groupName )
 {
 	TransitionGroup *g = findGroup(groupName);
+	// GeneralsX @bugfix fbraz3 18/09/2026 Guard against null transition group to prevent crash
+	if (!g)
+		return;
+
 	if( m_currentGroup == g )
 	{
 		m_currentGroup->reverse();
@@ -533,7 +551,13 @@ void GameWindowTransitionsHandler::reverse( AsciiString groupName )
 
 void GameWindowTransitionsHandler::remove( AsciiString groupName,  Bool skipPending )
 {
-	TransitionGroup *g = findGroup(groupName);
+	TransitionGroup* g = findGroup(groupName);
+
+	if (!g)
+	{
+		return;
+	}
+
 	if(m_pendingGroup == g)
 	{
 		if(skipPending)
@@ -605,5 +629,20 @@ void GameWindowTransitionsHandler::parseWindow( INI* ini, void *instance, void *
 	TransitionWindow *transWin = NEW TransitionWindow;
 	ini->initFromINI(transWin, myFieldParse);
 	((TransitionGroup*)instance)->addWindow(transWin);
+}
+
+// GeneralsX @feature fbraz3 14/10/2026 Add window to existing transition group if not already present
+void GameWindowTransitionsHandler::addWindowToGroup( AsciiString groupName, AsciiString winName, Int style, Int frameDelay )
+{
+	TransitionGroup *g = findGroup( groupName );
+	if (!g)
+		return;
+	if (g->hasWindow( winName ))
+		return;
+	TransitionWindow *transWin = NEW TransitionWindow;
+	transWin->m_winName = winName;
+	transWin->m_style = style;
+	transWin->m_frameDelay = frameDelay;
+	g->addWindow( transWin );
 }
 

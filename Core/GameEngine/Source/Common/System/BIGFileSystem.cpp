@@ -1,0 +1,1045 @@
+/*
+**	Command & Conquer Generals Zero Hour(tm)
+**	Copyright 2025 Electronic Arts Inc.
+**
+**	This program is free software: you can redistribute it and/or modify
+**	it under the terms of the GNU General Public License as published by
+**	the Free Software Foundation, either version 3 of the License, or
+**	(at your option) any later version.
+**
+**	This program is distributed in the hope that it will be useful,
+**	but WITHOUT ANY WARRANTY; without even the implied warranty of
+**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+**	GNU General Public License for more details.
+**
+**	You should have received a copy of the GNU General Public License
+**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+////////////////////////////////////////////////////////////////////////////////
+//																																						//
+//  (c) 2001-2003 Electronic Arts Inc.																				//
+//																																						//
+////////////////////////////////////////////////////////////////////////////////
+
+//////// BIGFileSystem.cpp ///////////////////////////
+// Bryan Cleveland, August 2002
+/////////////////////////////////////////////////////////////
+
+#include "PreRTS.h"
+
+#include "Common/BIGFileSystem.h"
+
+#include "Common/AudioAffect.h"
+#include "Common/ArchiveFile.h"
+#include "Common/file.h"
+#include "Common/GameAudio.h"
+#include "Common/GameMemory.h"
+#include "Common/LocalFileSystem.h"
+#include "Common/Registry.h"
+
+#include "Utility/endian_compat.h"
+
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+
+#if defined(_UNIX)
+#include <strings.h>
+#include <unistd.h>
+#endif
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
+
+static const char BIGFileIdentifier[] = { 'B', 'I', 'G', 'F' };
+
+struct BIGFileHeader {
+	char identifier[sizeof(BIGFileIdentifier)];
+	UnsignedInt archiveFileSize; // little endian, retail reads it as Int so 2 GB max
+	UnsignedInt numFiles; // big endian
+	UnsignedInt firstEntryOffset; // big endian
+};
+
+struct BIGFileEntryHeader {
+	UnsignedInt fileOffset; // big endian
+	UnsignedInt fileSize; // big endian
+};
+
+static_assert(sizeof(BIGFileHeader) == 16, "Incorrect BIG header size");
+static_assert(sizeof(BIGFileEntryHeader) == 8, "Incorrect BIG entry header size");
+
+// Returns the length of the string, or -1 if it is truncated or does not fit the buffer.
+static Int readNullTerminatedString(File *fp, char *buffer, Int bufferSize) {
+	for (Int i = 0; i < bufferSize; ++i) {
+		if (fp->read(buffer + i, 1) != 1) {
+			return -1;
+		}
+		if (buffer[i] == 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+namespace {
+
+static const char* kPrimaryAssetEnvGenerals = "CNC_GENERALS_PATH";
+static const char* kPrimaryAssetEnvZH = "CNC_GENERALS_ZH_PATH";
+static const char* kPrimaryAssetIniKey = "AssetPath";
+static const char* kAssetPathSection = "Paths";
+
+#if RTS_ZEROHOUR
+static const char* kBaseGeneralsAssetEnv = "CNC_GENERALS_PATH";
+static const char* kBaseGeneralsAssetIniKey = "GeneralsAssetPath";
+#endif
+
+// GeneralsX @bugfix UnicodeApocalypse 11/09/2026 True if the basename starts with "Patch" (e.g. PatchINI.big).
+static Bool isPatchArchiveFilename(const AsciiString& archivePath)
+{
+	const char* raw = archivePath.str();
+	const char* lastSlash = strrchr(raw, '/');
+	const char* lastBackslash = strrchr(raw, '\\');
+	const char* split = lastSlash;
+	if (split == nullptr || (lastBackslash != nullptr && lastBackslash > split)) {
+		split = lastBackslash;
+	}
+
+	const char* baseName = (split != nullptr) ? (split + 1) : raw;
+	AsciiString base(baseName);
+	return base.startsWithNoCase("Patch");
+}
+
+// GeneralsX @feature fbraz3 14/10/2026 True if the basename starts with "generalsx" (e.g. generalsx.big).
+static Bool isGeneralsXArchiveFilename(const AsciiString& archivePath)
+{
+	const char* raw = archivePath.str();
+	const char* lastSlash = strrchr(raw, '/');
+	const char* lastBackslash = strrchr(raw, '\\');
+	const char* split = lastSlash;
+	if (split == nullptr || (lastBackslash != nullptr && lastBackslash > split)) {
+		split = lastBackslash;
+	}
+
+	const char* baseName = (split != nullptr) ? (split + 1) : raw;
+	AsciiString base(baseName);
+	return base.startsWithNoCase("generalsx");
+}
+
+static Bool equalsIgnoreCase(const char* lhs, const char* rhs)
+{
+	if (lhs == nullptr || rhs == nullptr) {
+		return FALSE;
+	}
+
+#ifdef _WIN32
+	return _stricmp(lhs, rhs) == 0;
+#else
+	return strcasecmp(lhs, rhs) == 0;
+#endif
+}
+
+static const char* trimLeft(const char* text)
+{
+	while (*text != '\0' && (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n')) {
+		++text;
+	}
+
+	return text;
+}
+
+static void trimRight(char* text)
+{
+	Int len = static_cast<Int>(strlen(text));
+
+	while (len > 0) {
+		const char c = text[len - 1];
+		if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+			text[len - 1] = '\0';
+			--len;
+			continue;
+		}
+
+		break;
+	}
+}
+
+static Bool extractIniValue(const char* iniPath, const char* sectionName, const char* keyName, AsciiString& value)
+{
+	FILE* fp = fopen(iniPath, "r");
+	if (fp == nullptr) {
+		return FALSE;
+	}
+
+	Bool inSection = FALSE;
+	char line[2048] = { 0 };
+
+	while (fgets(line, sizeof(line), fp) != nullptr) {
+		trimRight(line);
+
+		const char* leftTrimmed = trimLeft(line);
+		if (*leftTrimmed == '\0' || *leftTrimmed == ';' || *leftTrimmed == '#') {
+			continue;
+		}
+
+		if (*leftTrimmed == '[') {
+			const char* sectionEnd = strchr(leftTrimmed, ']');
+			if (sectionEnd != nullptr) {
+				char sectionBuffer[256] = { 0 };
+				const size_t sectionLen = static_cast<size_t>(sectionEnd - (leftTrimmed + 1));
+				if (sectionLen < sizeof(sectionBuffer)) {
+					strncpy(sectionBuffer, leftTrimmed + 1, sectionLen);
+					sectionBuffer[sectionLen] = '\0';
+					trimRight(sectionBuffer);
+					const char* sectionNameTrimmed = trimLeft(sectionBuffer);
+					inSection = equalsIgnoreCase(sectionNameTrimmed, sectionName);
+				}
+				else {
+					inSection = FALSE;
+				}
+			}
+			else {
+				inSection = FALSE;
+			}
+
+			continue;
+		}
+
+		if (!inSection) {
+			continue;
+		}
+
+		const char* equalsPos = strchr(leftTrimmed, '=');
+		if (equalsPos == nullptr) {
+			continue;
+		}
+
+		char keyBuffer[256] = { 0 };
+		const size_t keyLen = static_cast<size_t>(equalsPos - leftTrimmed);
+		if (keyLen >= sizeof(keyBuffer)) {
+			continue;
+		}
+
+		strncpy(keyBuffer, leftTrimmed, keyLen);
+		keyBuffer[keyLen] = '\0';
+		trimRight(keyBuffer);
+		const char* keyTrimmed = trimLeft(keyBuffer);
+		if (!equalsIgnoreCase(keyTrimmed, keyName)) {
+			continue;
+		}
+
+		char valueBuffer[2048] = { 0 };
+		strncpy(valueBuffer, equalsPos + 1, sizeof(valueBuffer) - 1);
+		trimRight(valueBuffer);
+		const char* valueTrimmed = trimLeft(valueBuffer);
+		if (*valueTrimmed == '\0') {
+			continue;
+		}
+
+		size_t valueLen = strlen(valueTrimmed);
+		if (valueLen >= 2 && ((valueTrimmed[0] == '"' && valueTrimmed[valueLen - 1] == '"') || (valueTrimmed[0] == '\'' && valueTrimmed[valueLen - 1] == '\''))) {
+			char unquotedValue[2048] = { 0 };
+			const size_t copyLen = valueLen - 2;
+			if (copyLen >= sizeof(unquotedValue)) {
+				continue;
+			}
+
+			strncpy(unquotedValue, valueTrimmed + 1, copyLen);
+			unquotedValue[copyLen] = '\0';
+			value = unquotedValue;
+		}
+		else {
+			value = valueTrimmed;
+		}
+		fclose(fp);
+		return TRUE;
+	}
+
+	fclose(fp);
+	return FALSE;
+}
+
+static Bool getExecutableDirectory(AsciiString& exeDirectory)
+{
+	char pathBuffer[4096] = { 0 };
+
+#ifdef _WIN32
+	DWORD len = GetModuleFileNameA(nullptr, pathBuffer, sizeof(pathBuffer));
+	if (len == 0 || len >= sizeof(pathBuffer)) {
+		return FALSE;
+	}
+#elif defined(__APPLE__)
+	uint32_t bufferSize = static_cast<uint32_t>(sizeof(pathBuffer));
+	if (_NSGetExecutablePath(pathBuffer, &bufferSize) != 0) {
+		return FALSE;
+	}
+#else
+	ssize_t len = readlink("/proc/self/exe", pathBuffer, sizeof(pathBuffer) - 1);
+	if (len <= 0) {
+		return FALSE;
+	}
+	pathBuffer[len] = '\0';
+#endif
+
+	char* lastSlash = strrchr(pathBuffer, '/');
+	char* lastBackslash = strrchr(pathBuffer, '\\');
+	char* split = lastSlash;
+	if (split == nullptr || (lastBackslash != nullptr && lastBackslash > split)) {
+		split = lastBackslash;
+	}
+
+	if (split == nullptr) {
+		return FALSE;
+	}
+
+	*split = '\0';
+	exeDirectory = pathBuffer;
+	return exeDirectory.isNotEmpty();
+}
+
+static Bool sanitizeConfiguredPath(const char* rawValue, AsciiString& sanitizedPath)
+{
+	if (rawValue == nullptr) {
+		return FALSE;
+	}
+
+	char pathBuffer[4096] = { 0 };
+	strncpy(pathBuffer, rawValue, sizeof(pathBuffer) - 1);
+	trimRight(pathBuffer);
+
+	const char* trimmedPath = trimLeft(pathBuffer);
+	if (*trimmedPath == '\0') {
+		return FALSE;
+	}
+
+	const size_t trimmedLen = strlen(trimmedPath);
+	if (trimmedLen >= 2 && ((trimmedPath[0] == '"' && trimmedPath[trimmedLen - 1] == '"') || (trimmedPath[0] == '\'' && trimmedPath[trimmedLen - 1] == '\''))) {
+		char unquotedPath[4096] = { 0 };
+		const size_t copyLen = trimmedLen - 2;
+		if (copyLen >= sizeof(unquotedPath)) {
+			return FALSE;
+		}
+
+		strncpy(unquotedPath, trimmedPath + 1, copyLen);
+		unquotedPath[copyLen] = '\0';
+		sanitizedPath = unquotedPath;
+	}
+	else {
+		sanitizedPath = trimmedPath;
+	}
+
+	return sanitizedPath.isNotEmpty();
+}
+
+// GeneralsX @bugfix UnicodeApocalypse 11/09/2026 allowPatchPrecedence must be FALSE for fallback
+// roots so their Patch*.big can't outrank content already loaded from the primary root.
+template <typename TBigFileSystem>
+static Bool tryLoadBigFiles(TBigFileSystem* fileSystem, const AsciiString& directory, const char* sourceTag, Bool overwrite = FALSE, Bool allowPatchPrecedence = TRUE)
+{
+	if (directory.isEmpty()) {
+		return FALSE;
+	}
+
+	DEBUG_LOG(("Win32BIGFileSystem::init - trying '%s' assets directory: %s", sourceTag, directory.str()));
+	const Bool loaded = fileSystem->loadBigFilesFromDirectory(directory, "*.big", overwrite, allowPatchPrecedence);
+	if (loaded) {
+		DEBUG_LOG(("Win32BIGFileSystem::init - loaded BIG files from %s (%s)", directory.str(), sourceTag));
+	}
+
+	return loaded;
+}
+
+static Bool tryResolveFromIni(const AsciiString& exeDirectory, const char* keyName, AsciiString& resolvedPath)
+{
+	static const char* iniCandidates[] = {
+		"Options.ini"
+	};
+
+	for (UnsignedInt i = 0; i < ARRAY_SIZE(iniCandidates); ++i) {
+		if (extractIniValue(iniCandidates[i], kAssetPathSection, keyName, resolvedPath)) {
+			return TRUE;
+		}
+
+		if (exeDirectory.isNotEmpty()) {
+			AsciiString iniPath = exeDirectory;
+			iniPath.concat('/');
+			iniPath.concat(iniCandidates[i]);
+			if (extractIniValue(iniPath.str(), kAssetPathSection, keyName, resolvedPath)) {
+				return TRUE;
+			}
+		}
+	}
+
+	return FALSE;
+}
+
+// GeneralsX @feature felipebraz 13/11/2026 Check if a directory contains complete primary game archives.
+static Bool hasPrimaryGameArchive(const AsciiString& directory)
+{
+	if (directory.isEmpty()) {
+		return FALSE;
+	}
+
+	AsciiString dir = directory;
+	if (!dir.endsWith("/") && !dir.endsWith("\\")) {
+		dir.concat('/');
+	}
+
+#if RTS_ZEROHOUR
+	static const char* primaryFiles[] = {
+		"INIZH.big",
+		"inizh.big",
+		"INIZH.BIG"
+	};
+#else
+	static const char* primaryFiles[] = {
+		"INI.big",
+		"ini.big",
+		"INI.BIG"
+	};
+#endif
+
+	for (UnsignedInt i = 0; i < ARRAY_SIZE(primaryFiles); ++i) {
+		AsciiString candidate = dir;
+		candidate.concat(primaryFiles[i]);
+		if (TheLocalFileSystem != nullptr && TheLocalFileSystem->doesFileExist(candidate.str())) {
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+#if RTS_ZEROHOUR
+// GeneralsX @feature felipebraz 13/11/2026 Check if a directory contains base Generals archives.
+static Bool hasBaseGeneralsArchive(const AsciiString& directory)
+{
+	if (directory.isEmpty()) {
+		return FALSE;
+	}
+
+	AsciiString dir = directory;
+	if (!dir.endsWith("/") && !dir.endsWith("\\")) {
+		dir.concat('/');
+	}
+
+	static const char* baseFiles[] = {
+		"INI.big",
+		"ini.big",
+		"INI.BIG"
+	};
+
+	for (UnsignedInt i = 0; i < ARRAY_SIZE(baseFiles); ++i) {
+		AsciiString candidate = dir;
+		candidate.concat(baseFiles[i]);
+		if (TheLocalFileSystem != nullptr && TheLocalFileSystem->doesFileExist(candidate.str())) {
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+#endif
+
+template <typename TBigFileSystem>
+static Bool loadPrimaryGameAssets(TBigFileSystem* fileSystem, AsciiString* loadedDirectory)
+{
+	AsciiString exeDirectory;
+	getExecutableDirectory(exeDirectory);
+
+	// GeneralsX @feature felipebraz 13/11/2026 Resolve primary asset directory by CMD > ENV > INI > exedir-complete > registry > resources > exedir > current.
+	if (TheGlobalData != nullptr && TheGlobalData->m_assetPath.isNotEmpty()) {
+		AsciiString sanitizedCmdPath;
+		if (sanitizeConfiguredPath(TheGlobalData->m_assetPath.str(), sanitizedCmdPath)) {
+			fprintf(stderr, "[ASSET_ROOT] Trying cmdline -assetPath='%s'\n", sanitizedCmdPath.str());
+			if (tryLoadBigFiles(fileSystem, sanitizedCmdPath, "cmdline")) {
+				fprintf(stderr, "[ASSET_ROOT] Selected source=cmdline path='%s'\n", sanitizedCmdPath.str());
+				if (loadedDirectory != nullptr) {
+					*loadedDirectory = sanitizedCmdPath;
+				}
+				return TRUE;
+			}
+			fprintf(stderr, "[ASSET_ROOT] Cmdline path '%s' did not provide BIG files\n", sanitizedCmdPath.str());
+		}
+	}
+
+#if RTS_ZEROHOUR
+	const char* primaryEnvName = kPrimaryAssetEnvZH;
+	const char* primaryEnvValue = getenv(kPrimaryAssetEnvZH);
+#else
+	const char* primaryEnvName = kPrimaryAssetEnvGenerals;
+	const char* primaryEnvValue = getenv(kPrimaryAssetEnvGenerals);
+#endif
+	AsciiString sanitizedPrimaryEnvPath;
+	if (sanitizeConfiguredPath(primaryEnvValue, sanitizedPrimaryEnvPath)) {
+		fprintf(stderr, "[ASSET_ROOT] Trying env %s='%s'\n", primaryEnvName, sanitizedPrimaryEnvPath.str());
+		if (tryLoadBigFiles(fileSystem, sanitizedPrimaryEnvPath, "env")) {
+			fprintf(stderr, "[ASSET_ROOT] Selected source=env path='%s'\n", sanitizedPrimaryEnvPath.str());
+			if (loadedDirectory != nullptr) {
+				*loadedDirectory = sanitizedPrimaryEnvPath;
+			}
+			return TRUE;
+		}
+		fprintf(stderr, "[ASSET_ROOT] Env path '%s' did not provide BIG files\n", sanitizedPrimaryEnvPath.str());
+	}
+
+	// Backward compatibility with previous env naming.
+	const char* compatibilityEnvValue = getenv("GENERALSX_ASSET_PATH");
+	AsciiString sanitizedCompatibilityEnvPath;
+	if (sanitizeConfiguredPath(compatibilityEnvValue, sanitizedCompatibilityEnvPath)) {
+		if (tryLoadBigFiles(fileSystem, sanitizedCompatibilityEnvPath, "env-compat")) {
+			fprintf(stderr, "[ASSET_ROOT] Selected source=env-compat path='%s'\n", sanitizedCompatibilityEnvPath.str());
+			if (loadedDirectory != nullptr) {
+				*loadedDirectory = sanitizedCompatibilityEnvPath;
+			}
+			return TRUE;
+		}
+	}
+
+#if RTS_ZEROHOUR
+	const char* legacyEnvValue = getenv("CNC_ZH_INSTALLPATH");
+#else
+	const char* legacyEnvValue = getenv("CNC_GENERALS_INSTALLPATH");
+#endif
+	if (legacyEnvValue != nullptr && legacyEnvValue[0] != '\0') {
+		if (tryLoadBigFiles(fileSystem, AsciiString(legacyEnvValue), "legacy-env")) {
+			if (loadedDirectory != nullptr) {
+				*loadedDirectory = legacyEnvValue;
+			}
+			return TRUE;
+		}
+	}
+
+	AsciiString rawIniPath;
+	if (tryResolveFromIni(exeDirectory, kPrimaryAssetIniKey, rawIniPath)) {
+		AsciiString iniPath;
+		if (sanitizeConfiguredPath(rawIniPath.str(), iniPath)) {
+			fprintf(stderr, "[ASSET_ROOT] Trying ini [Paths]%s='%s'\n", kPrimaryAssetIniKey, iniPath.str());
+			if (tryLoadBigFiles(fileSystem, iniPath, "ini")) {
+				fprintf(stderr, "[ASSET_ROOT] Selected source=ini path='%s'\n", iniPath.str());
+				if (loadedDirectory != nullptr) {
+					*loadedDirectory = iniPath;
+				}
+				return TRUE;
+			}
+			if (exeDirectory.isNotEmpty()) {
+				AsciiString candidate = exeDirectory;
+				candidate.concat('/');
+				candidate.concat(iniPath);
+				if (tryLoadBigFiles(fileSystem, candidate, "ini-exedir")) {
+					fprintf(stderr, "[ASSET_ROOT] Selected source=ini-exedir path='%s'\n", candidate.str());
+					if (loadedDirectory != nullptr) {
+						*loadedDirectory = candidate;
+					}
+					return TRUE;
+				}
+			}
+		}
+	}
+
+	// GeneralsX @feature felipebraz 13/11/2026 Prefer complete installation found in executable directory
+	// over Windows registry so that launcher-managed workspaces (e.g. GenHub) and portable setups work out of the box.
+	if (exeDirectory.isNotEmpty() && hasPrimaryGameArchive(exeDirectory)) {
+		if (tryLoadBigFiles(fileSystem, exeDirectory, "default-exedir-complete")) {
+			fprintf(stderr, "[ASSET_ROOT] Selected source=default-exedir-complete path='%s'\n", exeDirectory.str());
+			if (loadedDirectory != nullptr) {
+				*loadedDirectory = exeDirectory;
+			}
+			return TRUE;
+		}
+	}
+
+	AsciiString defaultPath;
+	if (GetStringFromRegistry("", "InstallPath", defaultPath)) {
+		if (tryLoadBigFiles(fileSystem, defaultPath, "default-registry")) {
+			fprintf(stderr, "[ASSET_ROOT] Selected source=default path='%s'\n", defaultPath.str());
+			if (loadedDirectory != nullptr) {
+				*loadedDirectory = defaultPath;
+			}
+			return TRUE;
+		}
+	}
+
+#if RTS_ZEROHOUR
+	if (exeDirectory.isNotEmpty()) {
+		AsciiString resourcesPath = exeDirectory;
+		resourcesPath.concat("/../Resources");
+		if (tryLoadBigFiles(fileSystem, resourcesPath, "default-resources")) {
+			if (loadedDirectory != nullptr) {
+				*loadedDirectory = resourcesPath;
+			}
+			return TRUE;
+		}
+	}
+#endif
+
+	if (exeDirectory.isNotEmpty()) {
+		if (tryLoadBigFiles(fileSystem, exeDirectory, "default-exedir")) {
+			if (loadedDirectory != nullptr) {
+				*loadedDirectory = exeDirectory;
+			}
+			return TRUE;
+		}
+	}
+
+	DEBUG_LOG(("Win32BIGFileSystem::init - trying current working directory as last-resort assets path"));
+	if (fileSystem->loadBigFilesFromDirectory("", "*.big")) {
+		fprintf(stderr, "[ASSET_ROOT] Selected source=current-working-directory\n");
+		if (loadedDirectory != nullptr) {
+			*loadedDirectory = AsciiString::TheEmptyString;
+		}
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+#if RTS_ZEROHOUR
+template <typename TBigFileSystem>
+static void loadBaseGeneralsAssetsForZH(TBigFileSystem* fileSystem, const AsciiString& zhAssetDirectory)
+{
+	// GeneralsX @feature felipebraz 13/11/2026 Support -generalsAssetPath command line override
+	if (TheGlobalData != nullptr && TheGlobalData->m_generalsAssetPath.isNotEmpty()) {
+		AsciiString sanitizedCmdPath;
+		if (sanitizeConfiguredPath(TheGlobalData->m_generalsAssetPath.str(), sanitizedCmdPath)) {
+			if (tryLoadBigFiles(fileSystem, sanitizedCmdPath, "cmdline-generals", FALSE, FALSE)) {
+				return;
+			}
+		}
+	}
+
+	// GeneralsX @feature GitHubCopilot 16/03/2026 Resolve base Generals asset directory for ZH by CMD > ENV > INI > local ZH_Generals > registry > sibling.
+	const char* baseEnvValue = getenv(kBaseGeneralsAssetEnv);
+	if (baseEnvValue != nullptr && baseEnvValue[0] != '\0') {
+		if (tryLoadBigFiles(fileSystem, AsciiString(baseEnvValue), "env-generals", FALSE, FALSE)) {
+			return;
+		}
+	}
+
+	const char* compatibilityBaseEnvValue = getenv("GENERALSX_GENERALS_ASSET_PATH");
+	if (compatibilityBaseEnvValue != nullptr && compatibilityBaseEnvValue[0] != '\0') {
+		if (tryLoadBigFiles(fileSystem, AsciiString(compatibilityBaseEnvValue), "env-generals-compat", FALSE, FALSE)) {
+			return;
+		}
+	}
+
+	const char* legacyGeneralsEnvValue = getenv("CNC_GENERALS_INSTALLPATH");
+	if (legacyGeneralsEnvValue != nullptr && legacyGeneralsEnvValue[0] != '\0') {
+		if (tryLoadBigFiles(fileSystem, AsciiString(legacyGeneralsEnvValue), "legacy-env-generals", FALSE, FALSE)) {
+			return;
+		}
+	}
+
+	AsciiString exeDirectory;
+	getExecutableDirectory(exeDirectory);
+
+	AsciiString rawIniPath;
+	if (tryResolveFromIni(exeDirectory, kBaseGeneralsAssetIniKey, rawIniPath)) {
+		AsciiString iniPath;
+		if (sanitizeConfiguredPath(rawIniPath.str(), iniPath)) {
+			if (tryLoadBigFiles(fileSystem, iniPath, "ini-generals", FALSE, FALSE)) {
+				return;
+			}
+			if (exeDirectory.isNotEmpty()) {
+				AsciiString candidate = exeDirectory;
+				candidate.concat('/');
+				candidate.concat(iniPath);
+				if (tryLoadBigFiles(fileSystem, candidate, "ini-generals-exedir", FALSE, FALSE)) {
+					return;
+				}
+			}
+		}
+	}
+
+	// GeneralsX @feature felipebraz 13/11/2026 Prefer local ZH_Generals folder in the active ZH root
+	// or executable directory over the Windows registry for self-contained / launcher workspaces.
+	AsciiString rootZhDir = zhAssetDirectory.isNotEmpty() ? zhAssetDirectory : AsciiString(".");
+
+	AsciiString steamGenerals = rootZhDir;
+	steamGenerals.concat("/ZH_Generals");
+	if (hasBaseGeneralsArchive(steamGenerals) && tryLoadBigFiles(fileSystem, steamGenerals, "default-zh-generals", FALSE, FALSE)) {
+		return;
+	}
+
+	AsciiString steamGeneralsLower = rootZhDir;
+	steamGeneralsLower.concat("/zh_generals");
+	if (hasBaseGeneralsArchive(steamGeneralsLower) && tryLoadBigFiles(fileSystem, steamGeneralsLower, "default-zh-generals-lower", FALSE, FALSE)) {
+		return;
+	}
+
+	if (exeDirectory.isNotEmpty() && exeDirectory != rootZhDir) {
+		AsciiString exeGenerals = exeDirectory;
+		exeGenerals.concat("/ZH_Generals");
+		if (hasBaseGeneralsArchive(exeGenerals) && tryLoadBigFiles(fileSystem, exeGenerals, "default-exedir-zh-generals", FALSE, FALSE)) {
+			return;
+		}
+
+		AsciiString exeGeneralsLower = exeDirectory;
+		exeGeneralsLower.concat("/zh_generals");
+		if (hasBaseGeneralsArchive(exeGeneralsLower) && tryLoadBigFiles(fileSystem, exeGeneralsLower, "default-exedir-zh-generals-lower", FALSE, FALSE)) {
+			return;
+		}
+	}
+
+	AsciiString installPath;
+	GetStringFromGeneralsRegistry("", "InstallPath", installPath);
+	if (tryLoadBigFiles(fileSystem, installPath, "default-registry-generals", FALSE, FALSE)) {
+		return;
+	}
+
+	AsciiString siblingGenerals = rootZhDir;
+	siblingGenerals.concat("/../Generals");
+	if (tryLoadBigFiles(fileSystem, siblingGenerals, "default-sibling-generals", FALSE, FALSE)) {
+		return;
+	}
+
+	// Fallback to any ZH_Generals folder without requiring primary archive check
+	if (tryLoadBigFiles(fileSystem, steamGenerals, "default-zh-generals", FALSE, FALSE)) {
+		return;
+	}
+
+	if (tryLoadBigFiles(fileSystem, steamGeneralsLower, "default-zh-generals-lower", FALSE, FALSE)) {
+		return;
+	}
+}
+#endif
+
+}
+
+BIGFileSystem::BIGFileSystem() : ArchiveFileSystem() {
+}
+
+BIGFileSystem::~BIGFileSystem() {
+}
+
+void BIGFileSystem::init() {
+	DEBUG_ASSERTCRASH(TheLocalFileSystem != nullptr, ("TheLocalFileSystem must be initialized before TheArchiveFileSystem."));
+	if (TheLocalFileSystem == nullptr) {
+		return;
+	}
+
+	AsciiString primaryAssetsDirectory;
+	const Bool loadedPrimaryAssets = loadPrimaryGameAssets(this, &primaryAssetsDirectory);
+	DEBUG_ASSERTCRASH(loadedPrimaryAssets, ("No BIG files were loaded for the primary game assets."));
+	(void)loadedPrimaryAssets;
+
+	// GeneralsX @bugfix felipebraz 16/10/2026 Propagate the resolved asset root to the local file system.
+	// On Linux/macOS the binary cwd and the game data directory (asset root) are separate. Loose files like
+	// Data/Cursors/*.ani and Data/Scripts/*.scb must be resolvable from the asset root, not just from cwd.
+	// When BIG loading succeeds from cwd, primaryAssetsDirectory is empty; passing it clears any stale
+	// fallback root previously set during initialization so the working directory remains authoritative.
+	TheLocalFileSystem->setAssetRootPath(primaryAssetsDirectory);
+
+#if RTS_ZEROHOUR
+    loadBaseGeneralsAssetsForZH(this, primaryAssetsDirectory);
+#endif
+}
+
+void BIGFileSystem::reset() {
+}
+
+void BIGFileSystem::update() {
+}
+
+void BIGFileSystem::postProcessLoad() {
+}
+
+ArchiveFile * BIGFileSystem::openArchiveFile(const Char *filename) {
+	File *fp = TheLocalFileSystem->openFile(filename, File::READ | File::BINARY);
+	AsciiString archiveFileName;
+	archiveFileName = filename;
+	archiveFileName.toLower();
+	UnsignedInt archiveFileSize = 0;
+	UnsignedInt numLittleFiles = 0;
+	BIGFileHeader header;
+
+	DEBUG_LOG(("BIGFileSystem::openArchiveFile - opening BIG file %s", filename));
+
+	if (fp == nullptr) {
+		DEBUG_CRASH(("Could not open archive file %s for parsing", filename));
+		return nullptr;
+	}
+
+	AsciiString asciibuf;
+	char buffer[_MAX_PATH];
+	if (fp->read(&header, sizeof(header)) != sizeof(header) || memcmp(header.identifier, BIGFileIdentifier, sizeof(BIGFileIdentifier)) != 0) {
+		DEBUG_CRASH(("Error reading BIG file header in file %s", filename));
+		fp->close();
+		fp = nullptr;
+		return nullptr;
+	}
+
+	archiveFileSize = letoh(header.archiveFileSize);
+	numLittleFiles = betoh(header.numFiles);
+
+	DEBUG_LOG(("BIGFileSystem::openArchiveFile - size of archive file is %u bytes", archiveFileSize));
+
+//	char t;
+
+	DEBUG_LOG(("BIGFileSystem::openArchiveFile - %u are contained in archive", numLittleFiles));
+//	for (Int i = 0; i < 2; ++i) {
+//		t = buffer[i];
+//		buffer[i] = buffer[(4-i)-1];
+//		buffer[(4-i)-1] = t;
+//	}
+
+	// read in each directory listing.
+	ArchivedFileInfo fileInfo;
+	ArchiveFile *archiveFile = NEW ArchiveFile(filename, AsciiString::TheEmptyString);
+
+	Bool corrupt = FALSE;
+	for (UnsignedInt i = 0; i < numLittleFiles; ++i) {
+		BIGFileEntryHeader entry;
+		if (fp->read(&entry, sizeof(entry)) != sizeof(entry)) {
+			corrupt = TRUE;
+			break;
+		}
+
+		fileInfo.m_archiveFilename = archiveFileName;
+		fileInfo.m_offset = betoh(entry.fileOffset);
+		fileInfo.m_size = betoh(entry.fileSize);
+
+		// read in the path name of the file.
+		const Int pathIndex = readNullTerminatedString(fp, buffer, sizeof(buffer));
+		if (pathIndex < 0) {
+			corrupt = TRUE;
+			break;
+		}
+
+		char *leafName = getFileName(buffer);
+
+		fileInfo.m_filename = leafName;
+		fileInfo.m_filename.toLower();
+		*leafName = 0;
+
+		// GeneralsX @bugfix felipebraz 16/09/2026 Skip dummy/wildcard entries (e.g. Data\* in retail PatchZH.big)
+		if (fileInfo.m_filename.isEmpty() ||
+			fileInfo.m_filename.find('*') != nullptr ||
+			fileInfo.m_filename.find('?') != nullptr) {
+			continue;
+		}
+
+		AsciiString path;
+		path = buffer;
+
+		AsciiString debugpath;
+		debugpath = path;
+		debugpath.concat(fileInfo.m_filename);
+//		DEBUG_LOG(("BIGFileSystem::openArchiveFile - adding file %s to archive file %s, file number %d", debugpath.str(), fileInfo.m_archiveFilename.str(), i));
+
+		archiveFile->addFile(path, &fileInfo);
+	}
+
+	if (corrupt) {
+		DEBUG_CRASH(("Truncated or corrupt directory in BIG file %s", filename));
+		delete archiveFile;
+		fp->close();
+		fp = nullptr;
+		return nullptr;
+	}
+
+	archiveFile->attachFile(fp);
+
+	// leave fp open as the archive file will be using it.
+
+	return archiveFile;
+}
+
+void BIGFileSystem::closeArchiveFile(const Char *filename) {
+	// Need to close the specified big file
+	ArchiveFileMap::iterator it =  m_archiveFileMap.find(filename);
+	if (it == m_archiveFileMap.end()) {
+		return;
+	}
+
+	if (stricmp(filename, MUSIC_BIG) == 0) {
+		// Stop the current audio
+		TheAudio->stopAudio(AudioAffect_Music);
+
+		// No need to turn off other audio, as the lookups will just fail.
+	}
+	DEBUG_ASSERTCRASH(stricmp(filename, MUSIC_BIG) == 0, ("Attempting to close Archive file '%s', need to add code to handle its shutdown correctly.", filename));
+
+	// may need to do some other processing here first.
+
+	delete (it->second);
+	m_archiveFileMap.erase(it);
+}
+
+void BIGFileSystem::closeAllArchiveFiles() {
+}
+
+void BIGFileSystem::closeAllFiles() {
+}
+
+Bool BIGFileSystem::loadOneArchiveFile(const AsciiString& archivePath, Bool overwrite)
+{
+	// GeneralsX @bugfix UnicodeApocalypse 12/09/2026 Skip archives already loaded (e.g. a ZH_Generals
+	// fallback directory nested under the primary root gets scanned by both); reloading corrupts the tree.
+	if (m_archiveFileMap.find(archivePath) != m_archiveFileMap.end())
+		return FALSE;
+
+	ArchiveFile *archiveFile = openArchiveFile(archivePath.str());
+	if (archiveFile == nullptr) {
+		return FALSE;
+	}
+
+	DEBUG_LOG(("BIGFileSystem::loadArchiveFilesFromDirectory - loading %s into the directory tree.", archivePath.str()));
+	loadIntoDirectoryTree(archiveFile, overwrite);
+	m_archiveFileMap[archivePath] = archiveFile;
+	DEBUG_LOG(("BIGFileSystem::loadArchiveFilesFromDirectory - %s inserted into the archive file map.", archivePath.str()));
+	return TRUE;
+}
+
+Bool BIGFileSystem::loadArchiveFilesFromDirectory(AsciiString dir, AsciiString fileMask, Bool overwrite) {
+	return loadArchiveFilesFromDirectory(dir, fileMask, overwrite, TRUE);
+}
+
+Bool BIGFileSystem::loadArchiveFilesFromDirectory(AsciiString dir, AsciiString fileMask, Bool overwrite, Bool allowPatchPrecedence) {
+	FilenameList filenameList;
+	TheLocalFileSystem->getFileListInDirectory(dir, "", fileMask, filenameList, TRUE);
+
+#if defined(__EMSCRIPTEN__) && RTS_ZEROHOUR
+	// GeneralsX @build dx8wasm - restore Zero-Hour-over-base-Generals archive precedence.
+	//
+	// Zero Hour installs OVER base Generals and both ship .big archives, several sharing a file
+	// (most importantly Maps\MapCache.ini, the map index that also names the menu's shell map).
+	// When a file exists in both, Zero Hour must win. On desktop the two sets live in separate
+	// directories loaded in order, but emscripten's file_packager flattens every archive into one
+	// virtual dir, so they arrive in a single alphabetical list: base "maps.big" sorted before
+	// "MapsZH.big" and won, which hid ~95 ZH maps and blacked out the menu backdrop. Load every
+	// base archive first without override, then every "...ZH.big" with override, independent of
+	// the enumeration order. (Upstream's patch/generalsx.big ordering does not apply: the web
+	// bundle ships neither.)
+	{
+		Bool added = FALSE;
+		for (Int pass = 0; pass < 2; ++pass) {
+			for (FilenameListIter it = filenameList.begin(); it != filenameList.end(); ++it) {
+				// TheSuperHackers @bugfix bobtista 18/11/2025 Skip duplicate INIZH.big in Data\INI (CRC mismatches).
+				if (it->endsWithNoCase("Data\\INI\\INIZH.big") || it->endsWithNoCase("Data/INI/INIZH.big"))
+					continue;
+				const Bool isZH = it->endsWithNoCase("ZH.big");
+				if (isZH != (pass == 1))
+					continue;
+				if (loadOneArchiveFile(*it, pass == 1 ? TRUE : overwrite))
+					added = TRUE;
+			}
+		}
+		return added;
+	}
+#endif
+
+	// GeneralsX @bugfix UnicodeApocalypse 11/09/2026 Patch*.big must win over same-named base archives
+	// within this root; allowPatchPrecedence=FALSE keeps a fallback root from outranking the primary one.
+	FilenameList patchFilenameList;
+	// GeneralsX @feature fbraz3 14/10/2026 generalsx.big has highest precedence over both base and patch archives.
+	FilenameList generalsxFilenameList;
+	// GeneralsX @feature fbraz3 04/11/2026 In fallback scan (!allowPatchPrecedence && !overwrite), defer normal base archives so fallback patches mount first without overwriting Zero Hour
+	FilenameList normalFilenameList;
+
+	Bool actuallyAdded = FALSE;
+	FilenameListIter it = filenameList.begin();
+	while (it != filenameList.end()) {
+#if RTS_ZEROHOUR
+		// TheSuperHackers @bugfix bobtista 18/11/2025 Skip duplicate INIZH.big in Data\INI to prevent CRC mismatches.
+		// English, Chinese, and Korean SKUs shipped with two INIZH.big files (one in Run directory, one in Run\Data\INI).
+		// The DeleteFile cleanup doesn't work on EA App/Origin installs because the folder is not writable, so we skip loading it instead.
+		if (it->endsWithNoCase("Data\\INI\\INIZH.big") || it->endsWithNoCase("Data/INI/INIZH.big")) {
+			it++;
+			continue;
+		}
+
+		// GeneralsX @bugfix fbraz3 04/11/2026 Skip nested ZH_Generals subdirectory during the primary Zero Hour scan
+		// so loadBaseGeneralsAssetsForZH mounts base Generals archives afterward without patch precedence.
+		if (allowPatchPrecedence && it->getLength() > dir.getLength()) {
+			const char *subPath = it->str() + dir.getLength();
+			while (*subPath == '/' || *subPath == '\\') {
+				subPath++;
+			}
+			AsciiString sub(subPath);
+			if (sub.startsWithNoCase("ZH_Generals/") ||
+				sub.startsWithNoCase("ZH_Generals\\") ||
+				strstr(subPath, "/ZH_Generals/") != nullptr ||
+				strstr(subPath, "\\ZH_Generals\\") != nullptr) {
+				it++;
+				continue;
+			}
+		}
+#endif
+
+		// GeneralsX @feature fbraz3 04/11/2026 Defer generalsx*.big to ensure it is mounted last with highest precedence during primary scan
+		if (allowPatchPrecedence && isGeneralsXArchiveFilename(*it)) {
+			generalsxFilenameList.insert(*it);
+		} else if (isPatchArchiveFilename(*it)) {
+			patchFilenameList.insert(*it);
+		} else if (!allowPatchPrecedence && !overwrite) {
+			normalFilenameList.insert(*it);
+		} else if (loadOneArchiveFile(*it, overwrite)) {
+			actuallyAdded = TRUE;
+		}
+
+		it++;
+	}
+
+	FilenameListIter patchIt = patchFilenameList.begin();
+	while (patchIt != patchFilenameList.end()) {
+		if (loadOneArchiveFile(*patchIt, allowPatchPrecedence ? TRUE : overwrite)) {
+			actuallyAdded = TRUE;
+		}
+
+		patchIt++;
+	}
+
+	if (!allowPatchPrecedence && !overwrite) {
+		FilenameListIter normIt = normalFilenameList.begin();
+		while (normIt != normalFilenameList.end()) {
+			if (loadOneArchiveFile(*normIt, FALSE)) {
+				actuallyAdded = TRUE;
+			}
+
+			normIt++;
+		}
+	}
+
+	if (actuallyAdded && allowPatchPrecedence) {
+		FilenameListIter gxIt = generalsxFilenameList.begin();
+		while (gxIt != generalsxFilenameList.end()) {
+			if (loadOneArchiveFile(*gxIt, TRUE)) {
+				fprintf(stderr, "[BIG] Mounted GeneralsX archive: %s\n", gxIt->str());
+				fflush(stderr);
+			}
+
+			gxIt++;
+		}
+	}
+
+	return actuallyAdded;
+}
+
+void BIGFileSystem::loadMods()
+{
+	if (TheGlobalData->m_modBIG.isNotEmpty())
+	{
+		ArchiveFile *archiveFile = openArchiveFile(TheGlobalData->m_modBIG.str());
+
+		if (archiveFile != nullptr) {
+			DEBUG_LOG(("BIGFileSystem::loadMods - loading %s into the directory tree.", TheGlobalData->m_modBIG.str()));
+			loadIntoDirectoryTree(archiveFile, TRUE);
+			m_archiveFileMap[TheGlobalData->m_modBIG] = archiveFile;
+			DEBUG_LOG(("BIGFileSystem::loadMods - %s inserted into the archive file map.", TheGlobalData->m_modBIG.str()));
+		}
+		else
+		{
+			DEBUG_LOG(("BIGFileSystem::loadMods - could not openArchiveFile(%s)", TheGlobalData->m_modBIG.str()));
+		}
+	}
+
+	if (TheGlobalData->m_modDir.isNotEmpty())
+	{
+		MAYBE_UNUSED Bool ret = loadArchiveFilesFromDirectory(TheGlobalData->m_modDir, "*.big", TRUE, FALSE);
+		(void)ret;
+		DEBUG_ASSERTLOG(ret, ("loadArchiveFilesFromDirectory(%s) returned FALSE!", TheGlobalData->m_modDir.str()));
+	}
+}

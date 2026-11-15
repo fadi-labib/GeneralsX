@@ -139,6 +139,41 @@ static void showSortIcons()
 		}
 	}
 }
+LobbyGameModeFilter theLobbyFilter = LOBBY_FILTER_ALL;
+
+LobbyGameModeFilter detectGameMode(const std::string& name)
+{
+	std::string modeName = name;
+	std::transform(modeName.begin(), modeName.end(), modeName.begin(), ::tolower);
+
+	// remove spaces
+	modeName.erase(std::remove(modeName.begin(), modeName.end(), ' '), modeName.end());
+
+	// handle common variations
+	for (size_t i = 0; i < modeName.size(); ++i)
+	{
+		if (modeName.compare(i, 2, "vs") == 0)
+		{
+			modeName.erase(i + 1, 1);
+			continue;
+		}
+
+		if (modeName[i] == 'x')
+			modeName[i] = 'v';
+	}
+
+	if (modeName.find("aod") != std::string::npos)
+		return LOBBY_FILTER_AOD;
+	if (modeName.find("ffa") != std::string::npos || modeName.find("1v1v1") != std::string::npos)
+		return LOBBY_FILTER_FFA;
+	if (modeName.find("1v1") != std::string::npos)
+		return LOBBY_FILTER_1V1;
+	if (modeName.find("2v2") != std::string::npos || modeName.find("3v3") != std::string::npos || modeName.find("4v4") != std::string::npos)
+		return LOBBY_FILTER_TEAM;
+
+	return LOBBY_FILTER_ALL;
+}
+
 void setSortMode( GameSortType sortType ) { theGameSortType = sortType; showSortIcons(); RefreshGameListBoxes(); }
 void sortByBuddies( Bool doSort ) { sortBuddies = doSort; showSortIcons(); RefreshGameListBoxes(); }
 
@@ -210,7 +245,7 @@ static void gameTooltip(GameWindow *window,
 		return;
 	}
 
-	Int gameID = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(window, row, 0)));
+	Int gameID = (Int)(intptr_t)GadgetListBoxGetItemData(window, row, 0);
 	GameSpyStagingRoom *room = TheGameSpyInfo->findStagingRoomByID(gameID);
 	if (!room)
 	{
@@ -275,16 +310,7 @@ static void gameTooltip(GameWindow *window,
 	}
 	else
 	{
-		const char *start = room->getMap().reverseFind('\\');
-		if (start)
-		{
-			++start;
-		}
-		else
-		{
-			start = room->getMap().str();
-		}
-		mapName.translate( start );
+		mapName.translate( getFileName(room->getMap().str()) );
 	}
 	UnicodeString tmp;
 	tooltip.format(TheGameText->fetch("TOOLTIP:GameInfoGameName"), room->getGameName().str());
@@ -585,16 +611,7 @@ static Int insertGame( GameWindow *win, GameSpyStagingRoom *game, Bool showMap )
 		}
 		else
 		{
-			const char *start = game->getMap().reverseFind('\\');
-			if (start)
-			{
-				++start;
-			}
-			else
-			{
-				start = game->getMap().str();
-			}
-			mapName.translate( start );
+			mapName.translate( getFileName(game->getMap().str()) );
 		}
 		GadgetListBoxAddEntryText(win, mapName, gameColor, index, COLUMN_MAP);
 
@@ -697,8 +714,7 @@ void RefreshGameListBox( GameWindow *win, Bool showMap )
 	GadgetListBoxGetSelected(win, &selectedIndex);
 	if (selectedIndex != -1 )
 	{
-	// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-	selectedID = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(win, selectedIndex)));
+		selectedID = (Int)(intptr_t)GadgetListBoxGetItemData(win, selectedIndex);
 	}
 	int prevPos = GadgetListBoxGetTopVisibleEntry( win );
 
@@ -889,8 +905,7 @@ void playerTemplateComboBoxTooltip(GameWindow *wndComboBox, WinInstanceData *ins
 {
 	Int index = 0;
 	GadgetComboBoxGetSelectedPos(wndComboBox, &index);
-	// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-	Int templateNum = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(wndComboBox, index)));
+	Int templateNum = (Int)(intptr_t)GadgetComboBoxGetItemData(wndComboBox, index);
 	UnicodeString ustringTooltip;
 	if (templateNum == -1)
 	{
@@ -921,8 +936,7 @@ void playerTemplateListBoxTooltip(GameWindow *wndListBox, WinInstanceData *instD
 	if (row == -1 || col == -1)
 		return;
 
-// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-Int templateNum = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(wndListBox, row, col)));
+	Int templateNum = (Int)(intptr_t)GadgetListBoxGetItemData(wndListBox, row, col);
 	UnicodeString ustringTooltip;
 	if (templateNum == -1)
 	{

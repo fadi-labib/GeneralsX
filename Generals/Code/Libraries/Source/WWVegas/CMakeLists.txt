@@ -5,19 +5,12 @@ add_library(g_wwcommon INTERFACE)
 target_link_libraries(g_wwcommon INTERFACE
     core_wwcommon
     d3d8lib     # INTERFACE target: provides DXVK/DirectX types (DWORD, BOOL, etc.)
+    deps_miles
     stlport
 )
 
-# GeneralsX @build BenderAI 10/03/2026 Platform-specific multimedia stubs
-if(WIN32)
-    target_link_libraries(g_wwcommon INTERFACE
-        milesstub
-    )
-endif()
-
 target_include_directories(g_wwcommon INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    WW3D2
 )
 
 add_subdirectory(WWAudio)
@@ -29,7 +22,6 @@ add_library(g_wwvegas INTERFACE)
 
 target_include_directories(g_wwvegas INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    WW3D2
 )
 
 target_link_libraries(g_wwvegas INTERFACE

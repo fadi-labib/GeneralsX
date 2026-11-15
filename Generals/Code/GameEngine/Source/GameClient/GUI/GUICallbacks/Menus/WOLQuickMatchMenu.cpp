@@ -74,8 +74,13 @@ static LogClass s_perfLog("QMPerf.txt");
 static Bool s_inQM = FALSE;
 #define PERF_LOG(x) s_perfLog.log x
 #else // DEBUG_LOGGING
-#define PERF_LOG(x) {}
+#define PERF_LOG(x)
 #endif // DEBUG_LOGGING
+
+#include <map>
+#include <string>
+#include <cwchar>
+#include "PlatformBrowser.h"
 
 // PRIVATE DATA ///////////////////////////////////////////////////////////////////////////////////
 // window ids ------------------------------------------------------------------------------
@@ -137,6 +142,16 @@ static Int maxPoints= 100;
 static Int minPoints = 0;
 
 static const LadderInfo * getLadderInfo();
+
+// GeneralsX @feature fbraz3 27/09/2026 Map QuickMatch listbox rows to clickable URLs
+static const uintptr_t QM_MAP_PACK_LINK_MAGIC = 0x4D415053; // 'MAPS'
+static std::map<Int, std::string> s_qmRowUrls;
+
+// GeneralsX @feature fbraz3 27/09/2026 Open URL in default browser via platform layer
+static void OpenBrowserURL(const std::string& url)
+{
+	Platform::OpenBrowserURL(url.c_str());
+}
 
 
 // [SKB: Jul 01 2003 @ 7:7pm] :
@@ -234,9 +249,13 @@ enum
 };
 enum{ MAX_DISCONNECTS_COUNT = 5 };
 
-static Int MAX_DISCONNECTS[MAX_DISCONNECTS_COUNT] = {MAX_DISCONNECTS_ANY, MAX_DISCONNECTS_5,
-																											MAX_DISCONNECTS_10, MAX_DISCONNECTS_25,
-																											MAX_DISCONNECTS_50};
+static Int MAX_DISCONNECTS[MAX_DISCONNECTS_COUNT] = {
+	MAX_DISCONNECTS_ANY,
+	MAX_DISCONNECTS_5,
+	MAX_DISCONNECTS_10,
+	MAX_DISCONNECTS_25,
+	MAX_DISCONNECTS_50
+};
 
 
 void UpdateStartButton()
@@ -247,7 +266,7 @@ void UpdateStartButton()
 	Int index;
 	Int selected;
 	GadgetComboBoxGetSelectedPos( comboBoxLadder, &selected );
-	index = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData( comboBoxLadder, selected )));
+	index = (Int)(intptr_t)GadgetComboBoxGetItemData( comboBoxLadder, selected );
 	const LadderInfo *li = TheLadderList->findLadderByIndex( index );
 	if (li)
 	{
@@ -487,7 +506,7 @@ static const LadderInfo * getLadderInfo()
 	Int index;
 	Int selected;
 	GadgetComboBoxGetSelectedPos( comboBoxLadder, &selected );
-	index = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData( comboBoxLadder, selected )));
+	index = (Int)(intptr_t)GadgetComboBoxGetItemData( comboBoxLadder, selected );
 	const LadderInfo *li = TheLadderList->findLadderByIndex( index );
 	return li;
 }
@@ -566,7 +585,7 @@ static void populateQuickMatchMapSelectListbox( QuickMatchPreferences& pref )
 	Int index;
 	Int selected;
 	GadgetComboBoxGetSelectedPos( comboBoxLadder, &selected );
-	index = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData( comboBoxLadder, selected )));
+	index = (Int)(intptr_t)GadgetComboBoxGetItemData( comboBoxLadder, selected );
 	const LadderInfo *li = TheLadderList->findLadderByIndex( index );
 	//listboxMapSelect->winEnable( li == nullptr || li->randomMaps == FALSE );
 
@@ -592,7 +611,7 @@ static void populateQuickMatchMapSelectListbox( QuickMatchPreferences& pref )
 	GadgetListBoxReset(listboxMapSelect);
 	for (std::list<AsciiString>::const_iterator it = maps.begin(); it != maps.end(); ++it)
 	{
-		AsciiString theMap = *it;
+		const AsciiString &theMap = *it;
 		const MapMetaData *md = TheMapCache->findMap(theMap);
 		if (md && md->m_numPlayers >= numPlayers)
 		{
@@ -641,7 +660,7 @@ static void saveQuickMatchOptions()
 	Int index;
 	Int selected;
 	GadgetComboBoxGetSelectedPos( comboBoxLadder, &selected );
-	index = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData( comboBoxLadder, selected )));
+	index = (Int)(intptr_t)GadgetComboBoxGetItemData( comboBoxLadder, selected );
 	const LadderInfo *li = TheLadderList->findLadderByIndex( index );
 	Int numPlayers = 0;
 
@@ -697,7 +716,7 @@ static void saveQuickMatchOptions()
 
 	Int item;
 	GadgetComboBoxGetSelectedPos(comboBoxSide, &selected);
-	item = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(comboBoxSide, selected)));
+	item = (Int)(intptr_t)GadgetComboBoxGetItemData(comboBoxSide, selected);
 	pref.setSide(max(0, item));
 	GadgetComboBoxGetSelectedPos(comboBoxColor, &selected);
 	pref.setColor(max(0, selected));
@@ -787,9 +806,9 @@ void WOLQuickMatchMenuInit( WindowLayout *layout, void *userData )
 	comboBoxSide = TheWindowManager->winGetWindowFromId( parentWOLQuickMatch, comboBoxSideID );
 	comboBoxColor = TheWindowManager->winGetWindowFromId( parentWOLQuickMatch, comboBoxColorID );
 
-	if (TheLadderList->getStandardLadders()->empty()
-		&& TheLadderList->getSpecialLadders()->empty()
-		&& TheLadderList->getLocalLadders()->empty())
+	if (TheLadderList->getStandardLadders()->empty() &&
+		TheLadderList->getSpecialLadders()->empty() &&
+		TheLadderList->getLocalLadders()->empty())
 	{
 		// no ladders, so just disable them
 		comboBoxDisabledLadder = comboBoxLadder;
@@ -839,6 +858,47 @@ void WOLQuickMatchMenuInit( WindowLayout *layout, void *userData )
 	buttonStop->winHide( TRUE );
 	buttonStart->winHide( FALSE );
 	GadgetListBoxReset(quickmatchTextWindow);
+
+	// GeneralsX @feature fbraz3 27/09/2026 Display QuickMatch Map Pack notice and clickable wiki guide link
+	s_qmRowUrls.clear();
+	if (quickmatchTextWindow)
+	{
+		const std::string wikiUrl = "https://generalsx.org/maps";
+		Color headerColor = GameMakeColor(255, 200, 80, 255);  // Warm Gold/Amber
+		Color textColor   = GameSpyColor[GSCOLOR_DEFAULT];      // Standard text color
+		Color linkColor   = GameMakeColor(100, 180, 255, 255);  // Bright Link Blue
+
+		Int r0 = GadgetListBoxAddEntryText(quickmatchTextWindow, UnicodeString(L"Notice: QuickMatch requires the official Map Pack."), headerColor, -1, -1);
+		GadgetListBoxSetItemData(quickmatchTextWindow, (void*)(intptr_t)-1, r0);
+
+		Int r1 = GadgetListBoxAddEntryText(quickmatchTextWindow, UnicodeString(L"More info and download at the link below:"), textColor, -1, -1);
+		if (Platform::CanOpenBrowser())
+		{
+			GadgetListBoxSetItemData(quickmatchTextWindow, (void*)(uintptr_t)QM_MAP_PACK_LINK_MAGIC, r1);
+			if (r1 >= 0)
+				s_qmRowUrls[r1] = wikiUrl;
+		}
+		else
+		{
+			GadgetListBoxSetItemData(quickmatchTextWindow, (void*)(intptr_t)-1, r1);
+		}
+
+		Int r2 = GadgetListBoxAddEntryText(quickmatchTextWindow, UnicodeString(L"https://generalsx.org/maps"), linkColor, -1, -1);
+		if (Platform::CanOpenBrowser())
+		{
+			GadgetListBoxSetItemData(quickmatchTextWindow, (void*)(uintptr_t)QM_MAP_PACK_LINK_MAGIC, r2);
+			if (r2 >= 0)
+				s_qmRowUrls[r2] = wikiUrl;
+		}
+		else
+		{
+			GadgetListBoxSetItemData(quickmatchTextWindow, (void*)(intptr_t)-1, r2);
+		}
+
+		Int r3 = GadgetListBoxAddEntryText(quickmatchTextWindow, UnicodeString(L" "), textColor, -1, -1);
+		GadgetListBoxSetItemData(quickmatchTextWindow, (void*)(intptr_t)-1, r3);
+	}
+
 	enableOptionsGadgets(TRUE);
 
 	// Show Menu
@@ -954,6 +1014,7 @@ void WOLQuickMatchMenuShutdown( WindowLayout *layout, void *userData )
 	buttonBack = nullptr;
 	quickmatchTextWindow = nullptr;
 	selectedImage = unselectedImage = nullptr;
+	s_qmRowUrls.clear();
 
 	isShuttingDown = true;
 
@@ -1492,7 +1553,7 @@ WindowMsgHandledType WOLQuickMatchMenuSystem( GameWindow *window, UnsignedInt ms
 					if (pos >= 0)
 					{
 						QuickMatchPreferences pref;
-						Int ladderID = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(control, pos)));
+						Int ladderID = (Int)(intptr_t)GadgetComboBoxGetItemData(control, pos);
 						if (ladderID == 0)
 						{
 							// no ladder selected - enable buttons
@@ -1634,7 +1695,7 @@ WindowMsgHandledType WOLQuickMatchMenuSystem( GameWindow *window, UnsignedInt ms
 
 					Int ladderIndex, index, selected;
 					GadgetComboBoxGetSelectedPos( comboBoxLadder, &selected );
-					ladderIndex = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData( comboBoxLadder, selected )));
+					ladderIndex = (Int)(intptr_t)GadgetComboBoxGetItemData( comboBoxLadder, selected );
 					const LadderInfo *ladderInfo = nullptr;
 					if (ladderIndex < 0)
 					{
@@ -1655,7 +1716,7 @@ WindowMsgHandledType WOLQuickMatchMenuSystem( GameWindow *window, UnsignedInt ms
 					index = -1;
 					GadgetComboBoxGetSelectedPos( comboBoxSide, &selected );
 					if (selected >= 0)
-						index = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData( comboBoxSide, selected )));
+						index = (Int)(intptr_t)GadgetComboBoxGetItemData( comboBoxSide, selected );
 					req.QM.side = index;
 					if (ladderInfo && ladderInfo->randomFactions)
 					{
@@ -1670,7 +1731,7 @@ WindowMsgHandledType WOLQuickMatchMenuSystem( GameWindow *window, UnsignedInt ms
 						if (cit != ladderInfo->validFactions.end())
 						{
 							Int numPlayerTemplates = ThePlayerTemplateStore->getPlayerTemplateCount();
-							AsciiString sideStr = *cit;
+							const AsciiString &sideStr = *cit;
 							DEBUG_LOG(("Chose %s as our side... finding", sideStr.str()));
 							for (Int c=0; c<numPlayerTemplates; ++c)
 							{
@@ -1688,7 +1749,7 @@ WindowMsgHandledType WOLQuickMatchMenuSystem( GameWindow *window, UnsignedInt ms
 					index = -1;
 					GadgetComboBoxGetSelectedPos( comboBoxColor, &selected );
 					if (selected >= 0)
-						index = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData( comboBoxColor, selected )));
+						index = (Int)(intptr_t)GadgetComboBoxGetItemData( comboBoxColor, selected );
 					req.QM.color = index;
 
 					OptionPreferences natPref;
@@ -1807,6 +1868,26 @@ WindowMsgHandledType WOLQuickMatchMenuSystem( GameWindow *window, UnsignedInt ms
 					}
 					if (selected >= 0)
 						GadgetListBoxSetSelected(control, -1);
+				}
+				// GeneralsX @feature fbraz3 27/09/2026 Open QuickMatch map pack wiki guide on listbox row click
+				else if ( controlID == listboxQuickMatchID && selected >= 0 )
+				{
+					void *itemData = GadgetListBoxGetItemData(control, selected);
+					if (reinterpret_cast<uintptr_t>(itemData) == QM_MAP_PACK_LINK_MAGIC)
+					{
+						auto it = s_qmRowUrls.find(selected);
+						if (it != s_qmRowUrls.end() && !it->second.empty())
+						{
+							UnicodeString rowText = GadgetListBoxGetText(control, selected, 0);
+							if (rowText.str() && (wcsstr(rowText.str(), L"generalsx.org") || wcsstr(rowText.str(), L"download") || wcsstr(rowText.str(), L"Map Pack")))
+							{
+								fprintf(stderr, "[WOLQuickMatchMenu] Opening Map Pack URL: %s\n", it->second.c_str());
+								fflush(stderr);
+								OpenBrowserURL(it->second);
+							}
+						}
+					}
+					GadgetListBoxSetSelected(control, -1);
 				}
 				UpdateStartButton();
 				break;

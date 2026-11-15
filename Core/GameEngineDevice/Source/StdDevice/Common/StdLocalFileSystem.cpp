@@ -88,8 +88,7 @@ static std::filesystem::path fixFilenameFromWindowsPath(const Char *filename, In
 				return assetRootPath;
 			}
 
-			#ifdef __linux__
-			// GeneralsX @bugfix BenderAI 11/05/2026 Linux: resolve case-insensitive paths from asset root.
+			// GeneralsX @bugfix BenderAI 11/05/2026 Resolve case-insensitive paths from asset root.
 			// Some cursor files are lowercase on disk (e.g. sccpointer.ani) while INI references mixed-case names.
 			// The existing case-insensitive traversal below only checks cwd, not the asset root fallback.
 			std::filesystem::path assetRootFixed = s_assetFallbackPath;
@@ -135,25 +134,18 @@ static std::filesystem::path fixFilenameFromWindowsPath(const Char *filename, In
 					return assetRootFixed;
 				}
 			}
-			#endif
 		}
 		// Traverse path to try and match case-insensitively
 		std::filesystem::path parent = path.parent_path();
 
-		std::filesystem::path pathFixed;
-		std::filesystem::path pathCurrent;
+		// The walk begins at the root of the path, which is empty
+		// for a relative path. The first part of a relative path is then matched like the parts after it.
+		std::filesystem::path pathFixed = path.root_path();
+		std::filesystem::path pathCurrent = path.root_path();
 		// GeneralsX @build felipebraz 20/06/2025 const auto& required because libc++ std::filesystem::path iterator yields temporaries (non-const lvalue reference would fail on Apple clang)
-		for (const auto& p : path)
+		for (const auto& p : path.relative_path())
 		{
 			std::filesystem::path pathFixedPart;
-			if (pathCurrent.empty())
-			{
-				// Load the first part of the path
-				pathFixed /= p;
-				pathCurrent /= p;
-				continue;
-			}
-
 			if (std::filesystem::exists(pathCurrent / p, ec))
 			{
 				pathFixedPart = p;
@@ -165,7 +157,9 @@ static std::filesystem::path fixFilenameFromWindowsPath(const Char *filename, In
 			else
 			{
 				// Check if the subpath exists using case-insensitive comparison
-				for (auto& entry : std::filesystem::directory_iterator(pathFixed, ec))
+				// The first part of a relative path is searched in the working directory.
+				const std::filesystem::path pathSearch = pathFixed.empty() ? std::filesystem::path(".") : pathFixed;
+				for (auto& entry : std::filesystem::directory_iterator(pathSearch, ec))
 				{
 					if (strcasecmp(entry.path().filename().string().c_str(), p.string().c_str()) == 0)
 					{
@@ -187,7 +181,7 @@ static std::filesystem::path fixFilenameFromWindowsPath(const Char *filename, In
 				}
 
 				// Use the last known good path
-				pathFixed = p;
+				pathFixedPart = p;
 			}
 
 			// Copy of the current path to mirror the current depth
@@ -206,7 +200,7 @@ File * StdLocalFileSystem::openFile(const Char *filename, Int access, size_t buf
 	//USE_PERF_TIMER(StdLocalFileSystem_openFile)
 
 	// sanity check
-	if (strlen(filename) <= 0) {
+	if (*filename == '\0') {
 		return nullptr;
 	}
 
@@ -294,6 +288,22 @@ void StdLocalFileSystem::update()
 
 void StdLocalFileSystem::init()
 {
+#ifndef _WIN32
+	// GeneralsX @bugfix felipebraz 16/10/2026 Default asset root fallback from environment variables
+	if (s_assetFallbackPath.empty())
+	{
+#if RTS_ZEROHOUR
+		const char *env = getenv("CNC_GENERALS_ZH_PATH");
+		if (!env || !env[0]) env = getenv("CNC_GENERALS_PATH");
+#else
+		const char *env = getenv("CNC_GENERALS_PATH");
+#endif
+		if (env && env[0])
+		{
+			setAssetRootPath(AsciiString(env));
+		}
+	}
+#endif
 }
 
 void StdLocalFileSystem::reset()
@@ -314,11 +324,15 @@ Bool StdLocalFileSystem::doesFileExist(const Char *filename) const
 
 void StdLocalFileSystem::getFileListInDirectory(const AsciiString& currentDirectory, const AsciiString& originalDirectory, const AsciiString& searchName, FilenameList & filenameList, Bool searchSubdirectories) const
 {
-
+	// GeneralsX @bugfix felipebraz 16/09/2026 Ensure directory separator between original and current path
 	AsciiString asciisearch;
 	asciisearch = originalDirectory;
+	if (asciisearch.isNotEmpty() && currentDirectory.isNotEmpty() && !asciisearch.endsWith("/") && !asciisearch.endsWith("\\")) {
+		asciisearch.concat('/');
+	}
 	asciisearch.concat(currentDirectory);
 	auto searchExt = std::filesystem::path(searchName.str()).extension();
+	std::string searchExtStr = searchExt.string();
 	if (asciisearch.isEmpty()) {
 		asciisearch = ".";
 	}
@@ -330,21 +344,26 @@ void StdLocalFileSystem::getFileListInDirectory(const AsciiString& currentDirect
 	std::replace(fixedDirectory.begin(), fixedDirectory.end(), '\\', '/');
 #endif
 
-	Bool done = FALSE;
 	std::error_code ec;
 
 	auto iter = std::filesystem::directory_iterator(fixedDirectory.c_str(), ec);
-	// The default iterator constructor creates an end iterator
-	done = iter == std::filesystem::directory_iterator();
 
 	if (ec) {
 		DEBUG_LOG(("StdLocalFileSystem::getFileListInDirectory - Error opening directory %s", fixedDirectory.c_str()));
 		return;
 	}
 
-	while (!done)	{
+	// The default iterator constructor creates an end iterator
+	for (; iter != std::filesystem::directory_iterator(); ++iter)	{
 		std::string filenameStr = iter->path().filename().string();
-		if (!iter->is_directory() && iter->path().extension() == searchExt &&
+		std::string fileExtStr = iter->path().extension().string();
+		// GeneralsX @bugfix felipebraz 16/09/2026 Case-insensitive extension comparison for Linux (e.g. .BIG vs .big)
+#ifdef _WIN32
+		const Bool extMatches = (_stricmp(fileExtStr.c_str(), searchExtStr.c_str()) == 0);
+#else
+		const Bool extMatches = (strcasecmp(fileExtStr.c_str(), searchExtStr.c_str()) == 0);
+#endif
+		if (!iter->is_directory() && extMatches &&
 			(strcmp(filenameStr.c_str(), ".") != 0 && strcmp(filenameStr.c_str(), "..") != 0)) {
 			// if we haven't already, add this filename to the list.
 			// a stl set should only allow one copy of each filename
@@ -353,9 +372,6 @@ void StdLocalFileSystem::getFileListInDirectory(const AsciiString& currentDirect
 				filenameList.insert(newFilename);
 			}
 		}
-
-		iter++;
-		done = iter == std::filesystem::directory_iterator();
 	}
 
 	if (searchSubdirectories) {
@@ -367,20 +383,21 @@ void StdLocalFileSystem::getFileListInDirectory(const AsciiString& currentDirect
 		}
 
 		// The default iterator constructor creates an end iterator
-		done = iter == std::filesystem::directory_iterator();
-
-		while (!done) {
+		for (; iter != std::filesystem::directory_iterator(); ++iter) {
 			std::string filenameStr = iter->path().filename().string();
 			if(iter->is_directory() &&
 				(strcmp(filenameStr.c_str(), ".") != 0 && strcmp(filenameStr.c_str(), "..") != 0)) {
-				AsciiString tempsearchstr(filenameStr.c_str());
+				// GeneralsX @bugfix felipebraz 16/09/2026 Maintain cumulative relative path for subdirectory traversal
+				AsciiString tempsearchstr = currentDirectory;
+				if (tempsearchstr.isNotEmpty() && !tempsearchstr.endsWith("/") && !tempsearchstr.endsWith("\\")) {
+					tempsearchstr.concat('/');
+				}
+				tempsearchstr.concat(filenameStr.c_str());
+				tempsearchstr.concat('/');
 
 				// recursively add files in subdirectories if required.
 				getFileListInDirectory(tempsearchstr, originalDirectory, searchName, filenameList, searchSubdirectories);
 			}
-
-			iter++;
-			done = iter == std::filesystem::directory_iterator();
 		}
 	}
 }
@@ -389,7 +406,7 @@ Bool StdLocalFileSystem::getFileInfo(const AsciiString& filename, FileInfo *file
 {
 	std::filesystem::path path = fixFilenameFromWindowsPath(filename.str(), 0);
 
-	if(path.empty()) {
+	if (path.empty()) {
 		return FALSE;
 	}
 
@@ -408,10 +425,10 @@ Bool StdLocalFileSystem::getFileInfo(const AsciiString& filename, FileInfo *file
 
 	// TODO: fix this to be win compatible (time since 1601)
 	auto time = write_time.time_since_epoch().count();
+	fileInfo->sizeHigh = file_size >> 32;
+	fileInfo->sizeLow = file_size & UINT32_MAX;
 	fileInfo->timestampHigh = time >> 32;
 	fileInfo->timestampLow = time & UINT32_MAX;
-	fileInfo->sizeHigh      = file_size >> 32;
-	fileInfo->sizeLow  = file_size & UINT32_MAX;
 
 	return TRUE;
 }
@@ -445,7 +462,6 @@ AsciiString StdLocalFileSystem::normalizePath(const AsciiString& filePath) const
 	std::string nonNormalized(filePath.str());
 #ifndef _WIN32
 	// Replace backslashes with forward slashes on non-Windows platforms
-	// GeneralsX @bugfix BenderAI 13/02/2026 Fixed typo: unNormalized → nonNormalized
 	std::replace(nonNormalized.begin(), nonNormalized.end(), '\\', '/');
 #endif
 	std::filesystem::path pathNonNormalized(nonNormalized);
@@ -461,6 +477,8 @@ void StdLocalFileSystem::setAssetRootPath(const AsciiString& path)
 	std::string p(path.str());
 	std::replace(p.begin(), p.end(), '\\', '/');
 	s_assetFallbackPath = std::filesystem::path(std::move(p));
+	fprintf(stderr, "[ASSET_ROOT] StdLocalFileSystem asset root fallback set to '%s'\n", s_assetFallbackPath.string().c_str());
+	fflush(stderr);
 	DEBUG_LOG(("StdLocalFileSystem::setAssetRootPath - asset fallback path set to '%s'", s_assetFallbackPath.string().c_str()));
 }
 #endif

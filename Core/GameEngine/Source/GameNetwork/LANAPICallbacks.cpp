@@ -30,7 +30,9 @@
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
 #include <cstdint>
-#include "strtok_r.h"
+#include "WWLib/strtok_r.h"
+#include "Lib/PathUtil.h"
+#include "Common/FileSystem.h"
 #include "Common/GameEngine.h"
 #include "Common/GlobalData.h"
 #include "Common/MessageStream.h"
@@ -92,6 +94,18 @@ UnicodeString LANAPIInterface::getErrorStringFromReturnType( ReturnType ret )
 		default:
 			return TheGameText->fetch("LAN:ErrorUnknown");
 	}
+}
+
+// TheSuperHackers @feature arcticdolphin 08/08/2026 Adds /me emotes to LAN player chat, consistent with WOL
+void LANAPI::RequestPlayerChat( UnicodeString message )
+{
+	if (message.startsWithNoCase(L"/me "))
+	{
+		RequestChat(UnicodeString(message.str() + 4), LANCHAT_EMOTE);
+		return;
+	}
+
+	RequestChat(message, LANCHAT_NORMAL);
 }
 
 // On functions are (generally) the result of network traffic
@@ -229,11 +243,15 @@ void LANAPI::OnGameStart()
 
 		// see if we really have the map.  if not, back out.
 		TheMapCache->updateCache();
-		if (!filesOk || TheMapCache->findMap(m_currentGame->getMap()) == nullptr)
+		const MapMetaData *mapMeta = TheMapCache->findMap(m_currentGame->getMap());
+		if (!filesOk || mapMeta == nullptr ||
+			!isMapPathMatching(m_currentGame->getMap().str(), mapMeta->m_fileName.str()) ||
+			!TheFileSystem->doesFileExist(mapMeta->m_fileName.str()))
 		{
 			DEBUG_LOG(("After transfer, we didn't really have the map.  Bailing..."));
 			OnPlayerLeave(m_name);
 			removeGame(m_currentGame);
+			delete m_currentGame;
 			m_currentGame = nullptr;
 			m_inLobby = TRUE;
 
@@ -244,18 +262,19 @@ void LANAPI::OnGameStart()
 			return;
 		}
 
+		// GeneralsX @bugfix felipebraz 07/11/2026 Keep portable map identity in m_currentGame for protocol integrity, use verified local path for loader pendingFile.
 		m_currentGame->startGame(0);
 
 		// shutdown the top, but do not pop it off the stack
 		//TheShell->hideShell();
 		// setup the Global Data with the Map and Seed
-		TheWritableGlobalData->m_pendingFile = m_currentGame->getMap();
+		TheWritableGlobalData->m_pendingFile = mapMeta->m_fileName;
 
 		// send a message to the logic for a new game
 		GameMessage *msg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
 		msg->appendIntegerArgument(GAME_LAN);
 
-		TheWritableGlobalData->m_useFpsLimit = false;
+		// TheWritableGlobalData->m_useFpsLimit = false; // GeneralsX @bugfix fbraz3 21/07/2026 Keep FPS limiter active in multiplayer to avoid rendering at uncapped 500+ FPS
 
 		// Set the seeds
 		InitRandom( m_currentGame->getSeed() );
@@ -490,7 +509,7 @@ void LANAPI::OnSlotList( ReturnType ret, LANGameInfo *theGame )
 */
 void LANAPI::OnPlayerJoin( Int slot, UnicodeString playerName )
 {
-	if (m_currentGame && m_currentGame->getIP(0) == m_localIP)
+	if (AmIHost())
 	{
 		// Someone New Joined.. lets reset the accepts
 		m_currentGame->resetAccepted();
@@ -571,7 +590,7 @@ void LANAPI::OnPlayerLeave( UnicodeString player )
 	}
 	else
 	{
-		if (m_currentGame && m_currentGame->getIP(0) == m_localIP)
+		if (AmIHost())
 		{
 			// Force a new slotlist send
 			m_lastResendTime = 0;
@@ -634,8 +653,7 @@ void LANAPI::OnPlayerList( LANPlayer *playerList )
 		GadgetListBoxGetSelected(listboxPlayers, &selectedIndex);
 
 		if (selectedIndex != -1 )
-			// GeneralsX @bugfix BenderAI 13/02/2026 Use uintptr_t for 64-bit safe pointer cast
-			selectedIP = (uintptr_t) GadgetListBoxGetItemData(listboxPlayers, selectedIndex, 0);
+			selectedIP = (UnsignedInt)(uintptr_t)GadgetListBoxGetItemData(listboxPlayers, selectedIndex, 0);
 
 		GadgetListBoxReset(listboxPlayers);
 

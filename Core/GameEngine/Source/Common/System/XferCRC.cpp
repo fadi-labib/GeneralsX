@@ -34,7 +34,13 @@
 #include "Common/XferDeepCRC.h"
 #include "Common/crc.h"
 #include "Common/Snapshot.h"
+#if RETAIL_COMPATIBLE_CRC
 #include "Utility/endian_compat.h"
+#endif
+
+#if DEEP_CRC_TO_MEMORY
+#include "GameLogic/GameLogic.h"
+#endif
 
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
@@ -95,7 +101,11 @@ void XferCRC::endBlock()
 void XferCRC::addCRC( UnsignedInt val )
 {
 
+#if RETAIL_COMPATIBLE_CRC
 	m_crc = (m_crc << 1) + htobe(val) + ((m_crc >> 31) & 0x01);
+#else
+	m_crc = (m_crc << 1) + val + ((m_crc >> 31) & 0x01);
+#endif
 
 }
 
@@ -165,7 +175,11 @@ void XferCRC::skip( Int dataSize )
 UnsignedInt XferCRC::getCRC()
 {
 
+#if RETAIL_COMPATIBLE_CRC
 	return htobe(m_crc);
+#else
+	return m_crc;
+#endif
 
 }
 
@@ -175,7 +189,14 @@ UnsignedInt XferCRC::getCRC()
 XferDeepCRC::XferDeepCRC()
 {
 
+#if DEEP_CRC_TO_MEMORY
+	m_xferMode = XFER_CRC;
+	m_buffer = nullptr;
+	m_bufferIndex = 0;
+#else
 	m_xferMode = XFER_SAVE;
+#endif
+
 	m_fileFP = nullptr;
 
 }
@@ -202,8 +223,13 @@ XferDeepCRC::~XferDeepCRC()
 void XferDeepCRC::open( AsciiString identifier )
 {
 
+#if DEEP_CRC_TO_MEMORY
+	m_xferMode = XFER_CRC;
+#else
 	m_xferMode = XFER_SAVE;
+#endif
 
+#if !DEEP_CRC_TO_MEMORY
 	// sanity, check to see if we're already open
 	if( m_fileFP != nullptr )
 	{
@@ -213,10 +239,27 @@ void XferDeepCRC::open( AsciiString identifier )
 		throw XFER_FILE_ALREADY_OPEN;
 
 	}
+#endif
 
 	// call base class
 	Xfer::open( identifier );
 
+#if DEEP_CRC_TO_MEMORY
+	m_buffer = &TheGameLogic->getCRCBuffer();
+	m_bufferIndex = 0;
+
+	AsciiString str;
+	str.format("[ START OF DEEP CRC FRAME %d ]", TheGameLogic->getFrame());
+	const UnsignedInt length = str.getLength();
+
+	while (m_bufferIndex + length >= m_buffer->size())
+	{
+		m_buffer->resize(m_buffer->size() * 2);
+	}
+
+	memcpy(&(*m_buffer)[m_bufferIndex], str.str(), length);
+	m_bufferIndex += length;
+#else
 	// open the file
 	m_fileFP = fopen( identifier.str(), "w+b" );
 	if( m_fileFP == nullptr )
@@ -226,6 +269,7 @@ void XferDeepCRC::open( AsciiString identifier )
 		throw XFER_FILE_NOT_FOUND;
 
 	}
+#endif
 
 	// initialize CRC to brand new one at zero
 	m_crc = 0;
@@ -238,6 +282,21 @@ void XferDeepCRC::open( AsciiString identifier )
 void XferDeepCRC::close()
 {
 
+#if DEEP_CRC_TO_MEMORY
+	AsciiString str;
+	str.format("[ END OF DEEP CRC FRAME %d ]", TheGameLogic->getFrame());
+	const UnsignedInt length = str.getLength();
+
+	while (m_bufferIndex + length >= m_buffer->size())
+	{
+		m_buffer->resize(m_buffer->size() * 2);
+	}
+
+	memcpy(&(*m_buffer)[m_bufferIndex], str.str(), length);
+	m_bufferIndex += length;
+
+	TheGameLogic->storeCRCBuffer(m_bufferIndex);
+#else
 	// sanity, if we don't have an open file we can do nothing
 	if( m_fileFP == nullptr )
 	{
@@ -250,6 +309,11 @@ void XferDeepCRC::close()
 	// close the file
 	fclose( m_fileFP );
 	m_fileFP = nullptr;
+#endif
+
+#if DEEP_CRC_TO_MEMORY
+	m_buffer = nullptr;
+#endif
 
 	// erase the filename
 	m_identifier.clear();
@@ -267,6 +331,15 @@ void XferDeepCRC::xferImplementation( void *data, Int dataSize )
 		return;
 	}
 
+#if DEEP_CRC_TO_MEMORY
+	while (m_bufferIndex + dataSize >= m_buffer->size())
+	{
+		m_buffer->resize(m_buffer->size() * 2);
+	}
+
+	memcpy(&(*m_buffer)[m_bufferIndex], data, dataSize);
+	m_bufferIndex += dataSize;
+#else
 	// sanity
 	DEBUG_ASSERTCRASH( m_fileFP != nullptr, ("XferSave - file pointer for '%s' is null",
 										 m_identifier.str()) );
@@ -279,6 +352,7 @@ void XferDeepCRC::xferImplementation( void *data, Int dataSize )
 		throw XFER_WRITE_ERROR;
 
 	}
+#endif
 
 	XferCRC::xferImplementation( data, dataSize );
 
@@ -341,3 +415,18 @@ void XferDeepCRC::xferUnicodeString( UnicodeString *unicodeStringData )
 		xferUser( (void *)unicodeStringData->str(), sizeof( WideChar ) * len );
 
 }
+
+#if DEEP_CRC_TO_MEMORY
+void XferDeepCRC::changeXferMode(XferMode xferMode)
+{
+	m_xferMode = xferMode;
+}
+
+void XferDeepCRC::xferLogString(const AsciiString& str)
+{
+	if (m_buffer)
+	{
+		xferUser(const_cast<char*>(str.str()), str.getLength());
+	}
+}
+#endif

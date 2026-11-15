@@ -28,13 +28,62 @@
 
 #pragma once
 
-#include "Lib/BaseType.h"
 #include "GameNetwork/NetworkDefs.h"
 #include "GameNetwork/NetPacketStructs.h"
 #include "Common/UnicodeString.h"
 
 class GameMessageArgument;
 class NetCommandRef;
+
+//-----------------------------------------------------------------------------
+class NetCommandDataChunk
+{
+	NetCommandDataChunk(const NetCommandDataChunk&) FUNCTION_DELETE;
+	void operator=(const NetCommandDataChunk&) FUNCTION_DELETE;
+
+public:
+	NetCommandDataChunk(UnsignedByte *data, UnsignedInt size)
+		: m_data(data)
+		, m_size(size)
+	{}
+
+	NetCommandDataChunk(UnsignedInt size)
+		: m_data(NEW UnsignedByte[size])
+		, m_size(size)
+	{}
+
+	~NetCommandDataChunk()
+	{
+		delete[] m_data;
+	}
+
+	const UnsignedByte *data() const
+	{
+		return m_data;
+	}
+
+	UnsignedByte *data()
+	{
+		return m_data;
+	}
+
+	UnsignedInt size() const
+	{
+		return m_size;
+	}
+
+	UnsignedByte *release()
+	{
+		UnsignedByte *ret = m_data;
+		m_data = nullptr;
+		m_size = 0;
+		return ret;
+	}
+
+private:
+	UnsignedByte *m_data;
+	UnsignedInt m_size;
+};
 
 //-----------------------------------------------------------------------------
 class NetCommandMsg : public MemoryPoolObject
@@ -78,22 +127,23 @@ protected:
 template<typename NetPacketType, typename SmallNetPacketType>
 class NetCommandMsgT : public NetCommandMsg
 {
-	virtual size_t getSizeForNetPacket() const override
+public:
+	virtual size_t getSizeForNetPacket() const final
 	{
 		return NetPacketType::getSize(*this);
 	}
 
-	virtual size_t copyBytesForNetPacket(UnsignedByte* buffer, const NetCommandRef& ref) const override
+	virtual size_t copyBytesForNetPacket(UnsignedByte* buffer, const NetCommandRef& ref) const final
 	{
 		return NetPacketType::copyBytes(buffer, ref);
 	}
 
-	virtual size_t getSizeForSmallNetPacket(const Select* select = nullptr) const override
+	virtual size_t getSizeForSmallNetPacket(const Select* select = nullptr) const final
 	{
 		return SmallNetPacketType::getSize(*this, select);
 	}
 
-	virtual size_t copyBytesForSmallNetPacket(UnsignedByte* buffer, const NetCommandRef& ref, const Select* select = nullptr) const override
+	virtual size_t copyBytesForSmallNetPacket(UnsignedByte* buffer, const NetCommandRef& ref, const Select* select = nullptr) const final
 	{
 		return SmallNetPacketType::copyBytes(buffer, ref, select);
 	}

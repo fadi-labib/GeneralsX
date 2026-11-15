@@ -41,25 +41,26 @@
 
 #pragma once
 
-#include "always.h"
+#include "WWLib/always.h"
+#include <Utility/bit_adapter.h>
 #include "dllist.h"
 // GeneralsX @build BenderAI 10/02/2026
 // Use angle brackets (not quotes) to skip local d3d8.h stub and get DXVK headers
 // DXVK's d3d8.h includes d3d8types.h internally - no manual includes needed
 #include <d3d8.h>
-#include "matrix4.h"
+#include "WWMath/matrix4.h"
 #include "statistics.h"
-#include "wwstring.h"
-#include "lightenvironment.h"
-#include "shader.h"
-#include "vector4.h"
-#include "cpudetect.h"
+#include "WWLib/wwstring.h"
+#include "WW3D2/lightenvironment.h"
+#include "WW3D2/shader.h"
+#include "WWMath/vector4.h"
+#include "WWLib/cpudetect.h"
 #include "dx8caps.h"
 
 #include "texture.h"
 #include "dx8vertexbuffer.h"
 #include "dx8indexbuffer.h"
-#include "vertmaterial.h"
+#include "WW3D2/vertmaterial.h"
 
 /*
 ** Registry value names
@@ -152,6 +153,9 @@ WWINLINE void DX8_ErrorCode(unsigned res)
 	if (res==D3D_OK) return;
 	Log_DX8_ErrorCode(res);
 }
+
+// Converts a FLOAT to a DWORD for use in SetRenderState() calls
+inline DWORD F2DW(FLOAT f) { return std::bit_cast<DWORD>(f); }
 
 #ifdef WWDEBUG
 #define DX8CALL_HRES(x,res) DX8_Assert(); res = DX8Wrapper::_Get_D3D_Device8()->x; DX8_ErrorCode(res); DX8Wrapper::Increment_DX8_CallCount();
@@ -287,6 +291,10 @@ public:
 	static void Shutdown();
 
 	static void SetCleanupHook(DX8_CleanupHook *pCleanupHook) {m_pCleanupHook = pCleanupHook;};
+	static DX8_CleanupHook *GetCleanupHook() { return m_pCleanupHook; }
+	// GeneralsX @feature fbraz3 09/10/2026 Support multiple cleanup hooks for subsystems like W3DPostProcess
+	static void AddCleanupHook(DX8_CleanupHook *pCleanupHook);
+	static void RemoveCleanupHook(DX8_CleanupHook *pCleanupHook);
 	/*
 	** Some WW3D sub-systems need to be initialized after the device is created and shutdown
 	** before the device is released.
@@ -762,6 +770,7 @@ protected:
 
 	friend void DX8_Assert();
 	friend class WW3D;
+	friend class Renderer;
 	friend class DX8IndexBufferClass;
 	friend class DX8VertexBufferClass;
 };
@@ -867,8 +876,8 @@ WWINLINE void DX8Wrapper::Set_Fog(bool enable, const Vector3 &color, float start
 	ShaderClass::Invalidate();
 
 	// Set renderstates which are not affected by the shader
-	Set_DX8_Render_State(D3DRS_FOGSTART, *(DWORD *)(&start));
-	Set_DX8_Render_State(D3DRS_FOGEND,   *(DWORD *)(&end));
+	Set_DX8_Render_State(D3DRS_FOGSTART, std::bit_cast<DWORD>(start));
+	Set_DX8_Render_State(D3DRS_FOGEND,   std::bit_cast<DWORD>(end));
 }
 
 
@@ -916,7 +925,7 @@ WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigne
 	// Can't monitor state changes because setShader call to GERD may change the states!
 	if (RenderStates[state]==value) return;
 
-#ifdef MESH_RENDER_SNAPSHOT_ENABLED
+#ifdef DEBUG_LOGGING
 	if (WW3D::Is_Snapshot_Activated()) {
 		StringClass value_name(0,true);
 		Get_DX8_Render_State_Value_Name(value_name,state,value);
@@ -945,7 +954,8 @@ WWINLINE void DX8Wrapper::Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURE
 
 	// Can't monitor state changes because setShader call to GERD may change the states!
 	if (TextureStageStates[stage][(unsigned int)state]==value) return;
-#ifdef MESH_RENDER_SNAPSHOT_ENABLED
+
+#ifdef DEBUG_LOGGING
 	if (WW3D::Is_Snapshot_Activated()) {
 		StringClass value_name(0,true);
 		Get_DX8_Texture_Stage_State_Value_Name(value_name,state,value);
@@ -1247,10 +1257,8 @@ WWINLINE void DX8Wrapper::Set_Shader(const ShaderClass& shader)
 	}
 	render_state.shader=shader;
 	render_state_changed|=SHADER_CHANGED;
-#ifdef MESH_RENDER_SNAPSHOT_ENABLED
-	StringClass str;
-#endif
-	SNAPSHOT_SAY(("DX8Wrapper::Set_Shader(%s)",shader.Get_Description(str).str()));
+
+	SNAPSHOT_SAY(("DX8Wrapper::Set_Shader(%s)",shader.Get_Description().str()));
 }
 
 // GeneralsX @refactor BenderAI 10/02/2026

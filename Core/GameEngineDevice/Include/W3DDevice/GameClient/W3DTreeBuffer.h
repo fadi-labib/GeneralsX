@@ -47,14 +47,14 @@
 //-----------------------------------------------------------------------------
 //           Includes
 //-----------------------------------------------------------------------------
-#include "always.h"
-#include "rendobj.h"
-#include "w3d_file.h"
-#include "texture.h"
-#include "dx8vertexbuffer.h"
-#include "dx8indexbuffer.h"
-#include "shader.h"
-#include "vertmaterial.h"
+#include "WWLib/always.h"
+#include "WW3D2/rendobj.h"
+#include "WW3D2/w3d_file.h"
+#include "WW3D2/texture.h"
+#include "WW3D2/dx8vertexbuffer.h"
+#include "WW3D2/dx8indexbuffer.h"
+#include "WW3D2/shader.h"
+#include "WW3D2/vertmaterial.h"
 #include "Lib/BaseType.h"
 #include "Common/GameType.h"
 #include "Common/AsciiString.h"
@@ -83,6 +83,18 @@ enum W3DToppleState CPP_11(: Int)
 	TOPPLE_SHROUDED, // unused
 	TOPPLE_DOWN
 };
+
+// GeneralsX @feature Olcay Seygan / Ilyas Akin 08/10/2026 Model shadow handover to tree buffer
+/// One model that casts a shadow without being one of the batched trees.
+typedef struct {
+	DrawableID	drawableID;					///< who this belongs to, and how it is removed again
+	Int					numMesh;						///< meshes taken from the model (LOD 0, unskinned)
+	MeshClass		*mesh[4];						///< held with a reference, so the drawable dying cannot dangle it
+	Int					texNdx[4];					///< index into the buffer's shadow texture list
+	Real				baseZ;							///< the ground the shadow is laid on, read from the meshes each frame
+	Bool				visible;						///< recomputed every frame
+} TModelShadow;
+
 /// The individual data for a tree.
 typedef struct {
 	Vector3 location;					///< Drawing location
@@ -97,6 +109,7 @@ typedef struct {
 
 	Real		pushAside;
 	Real		pushAsideDelta;
+	Bool		pushAsideDirty;		///< True when current pose has not yet been uploaded to both vertex buffers.
 	Real		pushAsideSin;			///< Sine of the rotation angle at location.
 	Real		pushAsideCos;			///< Cosine of the rotation angle at location.
 	ObjectID pushAsideSource; ///< Unit that is pushing us aside.
@@ -191,6 +204,12 @@ public:
 		Real angle
 	);
 
+	// GeneralsX @feature Olcay Seygan / Ilyas Akin 08/10/2026 Model shadow handover to tree buffer
+	/// Take a model's shadow over: the object keeps drawing itself, the buffer draws its shadow.
+	Bool addModelShadow(DrawableID id, RenderObjClass *robj);
+	/// Give it back, when the drawable goes away or changes its model.
+	void removeModelShadow(DrawableID id);
+
 	void setTextureLOD(Int lod);	///<used to adjust maximum mip level sent to hardware.
 	/// Empties the tree buffer.
 	void clearAllTrees();
@@ -208,20 +227,30 @@ public:
 	TileData *getSourceTile(Int ndx) {return m_sourceTiles[ndx];}
 	void allocateTreeBuffers();							 ///< Allocates the buffers.
 	void freeTreeBuffers();									 ///< Frees the index and vertex buffers.
+	void releaseModelShadows();
 
 private:
 	enum { MAX_TREE_VERTEX=30000,
 					MAX_TREE_INDEX=60000,
 					MAX_TREES=4000};
+	// GeneralsX @bugfix fbraz3 13/11/2026 Increase tree buffer count to 4 (120k verts / 240k indices) to prevent foliage drop on zoomed-out/extended draw distance views
 	enum {MAX_TYPES = 64,
 				MAX_TILES = 512,
 				NUM_SWAY_ENTRIES = 100,
 				MAX_SWAY_TYPES = 10,
-				MAX_BUFFERS = 1,
+				MAX_BUFFERS = 4,
 				SORT_ITERATIONS_PER_FRAME=10};
 	enum {PARTITION_WIDTH_HEIGHT = 100};
+	enum {MAX_MODEL_SHADOWS = 1024,		///< object trees on a map; Golden Oasis has 278 palms
+				MAX_SHADOW_TEXTURES = 32,		///< distinct textures across those models
+				MAX_SHADOW_BATCH_VERTEX = 8000};	///< per texture, per frame
 	DX8VertexBufferClass	*m_vertexTree[MAX_BUFFERS];	///<Tree vertex buffer.
+	// GeneralsX @bugfix fbraz3 13/11/2026 Terrain-draped batched tree silhouette shadow vertex buffers
+	DX8VertexBufferClass	*m_vertexTreeShadow[MAX_BUFFERS];	///<Tree silhouette shadow vertex buffer.
 	DX8IndexBufferClass			*m_indexTree[MAX_BUFFERS];	///<indices defining a triangles for the tree drawing.
+	Real		m_lastShadowStretchX;	///< Sun shadow X stretch used when building m_vertexTreeShadow.
+	Real		m_lastShadowStretchY;	///< Sun shadow Y stretch used when building m_vertexTreeShadow.
+	Bool		m_lastShadowHaveSun;	///< Sun availability used when building m_vertexTreeShadow.
 	DWORD					m_dwTreePixelShader;	///<handle to D3D pixel shader
 	DWORD					m_dwTreeVertexShader;	///<handle to D3D vertex shader
 
@@ -256,6 +285,11 @@ private:
 
 	W3DProjectedShadow *m_shadow;
 
+	TModelShadow m_modelShadows[MAX_MODEL_SHADOWS];	///< shadows for trees the map placed as objects
+	Int m_numModelShadows;
+	TextureClass *m_shadowTextures[MAX_SHADOW_TEXTURES];	///< their textures, held with a reference
+	Int m_numShadowTextures;
+
 protected:
 	// snapshot methods
 	virtual void crc( Xfer *xfer ) override;
@@ -265,8 +299,12 @@ protected:
 protected:
 	/// Updates the sway offsets.
 	void updateSway(const BreezeInfo& info);
-	void loadTreesInVertexAndIndexBuffers(RefRenderObjListIterator *pDynamicLightsIterator); ///< Fills the index and vertex buffers for drawing.
+	Bool loadTreesInVertexAndIndexBuffers(RefRenderObjListIterator *pDynamicLightsIterator); ///< Fills the index and vertex buffers for drawing.
 	void updateVertexBuffer(); ///< Fills the index and vertex buffers for drawing.
+	// GeneralsX @bugfix fbraz3 13/11/2026 Separate batched draw helper for silhouette shadow pass and upright foliage pass
+	void drawTreeBuffers(Bool shadowPass); ///< Draws batched tree vertex/index buffers.
+	void drawModelShadows(CameraClass *camera, Real stretchX, Real stretchY); ///< the object trees' shadows
+	Int  addShadowTexture(TextureClass *tex);	///< index of this texture in the shadow list, adding it if new
 	void cull(const CameraClass * camera);						 ///< Culls the trees.
 	UnsignedInt  doLighting(const Vector3 *normal,
 		const GlobalData::TerrainLighting	*objectLighting,

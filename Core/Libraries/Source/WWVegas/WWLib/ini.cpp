@@ -118,11 +118,6 @@
 #include "widestring.h"
 #include "nstrdup.h"
 
-#if defined(__WATCOMC__)
-// Disable the "temporary object used to initialize a non-constant reference" warning.
-#pragma warning 665 9
-#endif
-
 
 // Instance of the static variables.
 bool INIClass::KeepBlankEntries = false;
@@ -1001,9 +996,9 @@ int INIClass::Get_UUBlock(char const * section, void * block, int len) const
  * HISTORY:                                                                                    *
  *    11/6/2001 4:27PM ST : Created                                                            *
  *=============================================================================================*/
-const WideStringClass& INIClass::Get_Wide_String(WideStringClass& new_string, char const * section, char const * entry, wchar_t const * defvalue) const
+const WideStringClass& INIClass::Get_Wide_String(WideStringClass& new_string, char const * section, char const * entry, unichar const * defvalue) const
 {
-	wchar_t out[1024];
+	unichar out[1024];
 	char buffer[1024];
 
 	Base64Pipe b64pipe(Base64Pipe::DECODE);
@@ -1040,7 +1035,7 @@ const WideStringClass& INIClass::Get_Wide_String(WideStringClass& new_string, ch
  * HISTORY:                                                                                    *
  *   11/6/2001 4:29PM ST : Created                                                             *
  *=============================================================================================*/
-bool INIClass::Put_Wide_String(char const * section, char const * entry, wchar_t const * string)
+bool INIClass::Put_Wide_String(char const * section, char const * entry, unichar const * string)
 {
 	if (section == nullptr || entry == nullptr || string == nullptr) {
 		return(false);

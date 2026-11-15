@@ -39,6 +39,9 @@
 // translation unit with WebUDP.cpp (a JS peer-mesh bridge over WebRTC). Compile
 // it out here so the two do not provide duplicate UDP:: symbols.
 #ifndef __EMSCRIPTEN__
+#if defined(_WIN32) && defined(_MSC_VER)
+typedef int socklen_t;
+#endif
 
 //-------------------------------------------------------------------------
 
@@ -152,6 +155,8 @@ Int UDP::Bind(UnsignedInt IP,UnsignedShort Port)
   int status;
   UnsignedInt ipHostOrder = IP;
   UnsignedShort portHostOrder = Port;
+  (void)ipHostOrder;
+  (void)portHostOrder;
 
   IP=htonl(IP);
   Port=htons(Port);
@@ -195,11 +200,11 @@ Int UDP::Bind(UnsignedInt IP,UnsignedShort Port)
     portHostOrder, m_lastError); */
     status=GetStatus();
     //CERR("Bind failure (" << status << ") IP " << IP << " PORT " << Port )
+    closesocket(fd);
+    fd=0;
     return(status);
   }
 
-// GeneralsX @bugfix BenderAI 13/02/2026 Use socklen_t for POSIX socket functions (fighter19 pattern)
-socklen_t namelen=sizeof(addr);
   retval=SetBlocking(FALSE);
   if (retval==-1)
     fprintf(stderr,"Couldn't set nonblocking mode!\n");

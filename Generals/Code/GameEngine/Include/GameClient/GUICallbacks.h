@@ -117,6 +117,13 @@ extern void SkirmishMapSelectMenuShutdown( WindowLayout *layout, void *userData 
 extern WindowMsgHandledType SkirmishMapSelectMenuSystem( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
 extern WindowMsgHandledType SkirmishMapSelectMenuInput( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
 
+// Generals' Challenge Mode Menu
+extern void ChallengeMenuInit( WindowLayout *layout, void *userData );
+extern void ChallengeMenuUpdate( WindowLayout *layout, void *userData );
+extern void ChallengeMenuShutdown( WindowLayout *layout, void *userData );
+extern WindowMsgHandledType ChallengeMenuSystem( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
+extern WindowMsgHandledType ChallengeMenuInput( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
+
 // Keyboard Options Menu ---------------------------------------------------------------------------
 extern void KeyboardOptionsMenuInit( WindowLayout *layout, void *userData );
 extern void KeyboardOptionsMenuUpdate( WindowLayout *layout, void *userData );
@@ -155,6 +162,14 @@ extern void DownloadMenuUpdate( WindowLayout *layout, void *userData );
 extern void DownloadMenuShutdown( WindowLayout *layout, void *userData );
 extern WindowMsgHandledType DownloadMenuSystem( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
 extern WindowMsgHandledType DownloadMenuInput( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
+
+// GeneralsX @feature fbraz3 14/10/2026 GeneralsX options menu window callbacks
+// GeneralsX Menu (GeneralsX Options) ----------------------------------------------------------------------------------
+extern void GeneralsXMenuInit( WindowLayout *layout, void *userData );
+extern void GeneralsXMenuUpdate( WindowLayout *layout, void *userData );
+extern void GeneralsXMenuShutdown( WindowLayout *layout, void *userData );
+extern WindowMsgHandledType GeneralsXMenuSystem( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
+extern WindowMsgHandledType GeneralsXMenuInput( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
 
 // Popup host Game Internet -----------------------------------------------------------------------------------
 extern void DifficultySelectInit( WindowLayout *layout, void *userData );
@@ -269,6 +284,7 @@ extern WindowMsgHandledType GameSpyPlayerInfoOverlayInput( GameWindow *window, U
 
 // Popup host Game Internet -----------------------------------------------------------------------------------
 extern void PopupHostGameInit( WindowLayout *layout, void *userData );
+extern void PopupHostGameUpdate( WindowLayout * layout, void *userData);
 extern WindowMsgHandledType PopupHostGameSystem( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
 extern WindowMsgHandledType PopupHostGameInput( GameWindow *window, UnsignedInt msg, WindowMsgData mData1, WindowMsgData mData2 );
 

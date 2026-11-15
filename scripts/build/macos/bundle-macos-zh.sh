@@ -19,7 +19,7 @@ DXVK_D3D8_LIB_MESON="${BUILD_DIR}/_deps/dxvk-build-macos/src/d3d8/libdxvk_d3d8.0
 DXVK_D3D9_LIB_MESON="${BUILD_DIR}/_deps/dxvk-build-macos/src/d3d9/libdxvk_d3d9.0.dylib"
 BINARY_SRC="${BUILD_DIR}/GeneralsMD/GeneralsXZH"
 DXVK_CONF_SRC="${PROJECT_ROOT}/resources/dxvk/dxvk.conf"
-OUTPUT_ZIP="${PROJECT_ROOT}/GeneralsXZH-macos-arm64.zip"
+OUTPUT_ZIP="${PROJECT_ROOT}/macos-arm64-GeneralsXZH.zip"
 
 DXVK_D3D8_LIB="${DXVK_D3D8_LIB_INSTALL}"
 DXVK_D3D9_LIB="${DXVK_D3D9_LIB_INSTALL}"
@@ -239,6 +239,8 @@ cat > "${CONTENTS_DIR}/Info.plist" <<'PLIST'
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
 </dict>
 </plist>
 PLIST
@@ -343,6 +345,14 @@ else
     echo "WARNING: ${DXVK_CONF_SRC} not found - terrain shaders may fail on macOS"
 fi
 
+# GeneralsX @feature fbraz3 14/10/2026 Bundle generalsx.big archive
+echo "  + generalsx.big"
+GENERALSX_BIG="${BUILD_DIR}/generalsx.big"
+python3 "${PROJECT_ROOT}/scripts/tooling/build_big.py" pack "${PROJECT_ROOT}/assets/generalsx-big" "${GENERALSX_BIG}"
+if [[ -f "${GENERALSX_BIG}" ]]; then
+    cp "${GENERALSX_BIG}" "${RESOURCES_DIR}/generalsx.big"
+fi
+
 # GeneralsX @bugfix Copilot 24/03/2026 Bundle Fontconfig config so FreeType/Fontconfig font matching works in app launcher runtime.
 # GeneralsX @bugfix Copilot 24/03/2026 Guard Fontconfig conf.d copy so missing directory does not break bundling under set -e.
 if [[ -f "${FONTCONFIG_ETC_DIR}/fonts.conf" ]]; then
@@ -357,6 +367,18 @@ if [[ -f "${FONTCONFIG_ETC_DIR}/fonts.conf" ]]; then
     fi
 else
     echo "WARNING: ${FONTCONFIG_ETC_DIR}/fonts.conf not found - in-game font lookup may fail on macOS"
+fi
+
+# GeneralsX @feature felipebraz 26/09/2026 Bundle universal fonts into application resources.
+mkdir -p "${RESOURCES_DIR}/fonts"
+if [[ -d "${PROJECT_ROOT}/assets/fonts" ]]; then
+    echo "  + Bundled fonts"
+    cp "${PROJECT_ROOT}/assets/fonts"/*.ttf "${RESOURCES_DIR}/fonts/"
+    cp "${PROJECT_ROOT}/assets/fonts/LICENSE.liberation" "${RESOURCES_DIR}/fonts/"
+    cp "${PROJECT_ROOT}/assets/fonts/LICENSE.fontawesome" "${RESOURCES_DIR}/fonts/"
+else
+    echo "ERROR: ${PROJECT_ROOT}/assets/fonts directory not found - cannot bundle fonts" >&2
+    exit 1
 fi
 
 # App launcher wrapper
@@ -401,12 +423,23 @@ fi
 
 # GeneralsX @bugfix BenderAI 01/04/2026 Select default Zero Hour asset path by .big presence, with GeneralsMD fallback.
 # Default asset paths matching the standard macOS deploy layout (allow user override)
-export CNC_GENERALS_PATH="${CNC_GENERALS_PATH:-${HOME}/GeneralsX/Generals}"
+# GeneralsX @bugfix felipebraz 12/07/2026 Default CNC_GENERALS_PATH to ~/GeneralsX/Generals if empty (Issue #205)
+if [[ -z "${CNC_GENERALS_PATH:-}" ]]; then
+    if [[ -d "${HOME}/GeneralsX/Generals" && -n "$(compgen -G "${HOME}/GeneralsX/Generals/*.big" 2>/dev/null)" ]]; then
+        export CNC_GENERALS_PATH="${HOME}/GeneralsX/Generals"
+    elif [[ -d "${HOME}/GeneralsX/data/Generals" && -n "$(compgen -G "${HOME}/GeneralsX/data/Generals/*.big" 2>/dev/null)" ]]; then
+        export CNC_GENERALS_PATH="${HOME}/GeneralsX/data/Generals"
+    else
+        export CNC_GENERALS_PATH="${HOME}/GeneralsX/Generals"
+    fi
+fi
 if [[ -z "${CNC_GENERALS_ZH_PATH:-}" ]]; then
     if [[ -d "${HOME}/GeneralsX/GeneralsZH" && -n "$(compgen -G "${HOME}/GeneralsX/GeneralsZH/*.big" 2>/dev/null)" ]]; then
         export CNC_GENERALS_ZH_PATH="${HOME}/GeneralsX/GeneralsZH"
     elif [[ -d "${HOME}/GeneralsX/GeneralsMD" && -n "$(compgen -G "${HOME}/GeneralsX/GeneralsMD/*.big" 2>/dev/null)" ]]; then
         export CNC_GENERALS_ZH_PATH="${HOME}/GeneralsX/GeneralsMD"
+    elif [[ -d "${HOME}/GeneralsX/data/GeneralsZH" && -n "$(compgen -G "${HOME}/GeneralsX/data/GeneralsZH/*.big" 2>/dev/null)" ]]; then
+        export CNC_GENERALS_ZH_PATH="${HOME}/GeneralsX/data/GeneralsZH"
     elif [[ -d "${HOME}/GeneralsX/GeneralsZH" ]]; then
         export CNC_GENERALS_ZH_PATH="${HOME}/GeneralsX/GeneralsZH"
     else
@@ -429,15 +462,31 @@ if [[ -f "${RESOURCES_DIR}/fontconfig/fonts.conf" ]]; then
     export FONTCONFIG_PATH="${RESOURCES_DIR}/fontconfig"
 fi
 
+# GeneralsX @bugfix felipebraz 26/09/2026 Export GX_BUNDLE_FONTS so engine resolves staged fonts when CWD changes to asset root.
+if [[ -d "${RESOURCES_DIR}/fonts" ]]; then
+    export GX_BUNDLE_FONTS="${RESOURCES_DIR}/fonts"
+fi
+
 # Run from the detected Zero Hour asset root when available.
 if [[ -d "${CNC_GENERALS_ZH_PATH}" ]]; then
     cd "${CNC_GENERALS_ZH_PATH}"
+
+    if [[ -f "${RESOURCES_DIR}/generalsx.big" ]]; then
+        _stage_tmp="generalsx.big.tmp.$$"
+        rm -f "${_stage_tmp}" 2>/dev/null || true
+        if cp -f "${RESOURCES_DIR}/generalsx.big" "${_stage_tmp}" 2>/dev/null && mv -f "${_stage_tmp}" "generalsx.big" 2>/dev/null; then
+            rm -f "Data/INI/FXListGeneralsX.ini" "Window/Menus/ExtrasMenu.wnd" 2>/dev/null || true
+        else
+            rm -f "${_stage_tmp}" 2>/dev/null || true
+        fi
+    fi
 
     # SagePatch INI override: the engine now auto-creates SagePatch.ini with
     # defaults in the user data directory on first run.
 fi
 
-exec "${BIN_DIR}/GeneralsXZH" "$@"
+"${BIN_DIR}/GeneralsXZH" "$@" 2>&1 | grep --line-buffered -v "Unimplemented render state D3DRS_PATCHSEGMENTS" | grep --line-buffered -v "No accelerated colorspace conversion"
+exit ${PIPESTATUS[0]}
 WRAPPER
 chmod +x "${MACOS_DIR}/run.sh"
 
@@ -454,11 +503,12 @@ exec "${SCRIPT_DIR}/GeneralsXZH.app/Contents/MacOS/run.sh" "$@"
 RUNNER
 chmod +x "${STAGE_DIR}/run.sh"
 
-# Create zip
+# Create zip containing only the .app bundle directly at the root
+# GeneralsX @bugfix Meeseeks 14/09/2026 Package .app directly at zip root to prevent nested folders on extract.
 echo ""
 echo "Creating ${OUTPUT_ZIP}..."
 rm -f "${OUTPUT_ZIP}"
-(cd "${STAGE_DIR}" && zip -r "${OUTPUT_ZIP}" "${APP_DIR_NAME}" run.sh)
+(cd "${STAGE_DIR}" && zip -y -r "${OUTPUT_ZIP}" "${APP_DIR_NAME}")
 
 echo ""
 echo "Bundle complete: ${OUTPUT_ZIP}"
@@ -467,7 +517,7 @@ unzip -l "${OUTPUT_ZIP}" | sed '1,3d;$d'
 echo ""
 echo "To use locally:"
 echo "  1) unzip ${OUTPUT_ZIP}"
-echo "  2) run: ./run.sh -win"
+echo "  2) run: ./${APP_DIR_NAME}/Contents/MacOS/run.sh -win"
 echo "  3) or open: open ${APP_DIR_NAME}"
 echo ""
 echo "Runtime env defaults inside app launcher:"

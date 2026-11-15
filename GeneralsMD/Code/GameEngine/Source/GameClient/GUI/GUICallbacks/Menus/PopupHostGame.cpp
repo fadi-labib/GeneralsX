@@ -71,6 +71,13 @@
 #include "GameNetwork/GameSpy/LadderDefs.h"
 #include "Common/CustomMatchPreferences.h"
 #include "Common/LadderPreferences.h"
+#if defined(SAGE_USE_NGMP)
+#include "GameNetwork/GeneralsOnline/OnlineServices_Manager.h"
+#include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
+#include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
+#include "GameClient/MapUtil.h"
+#include "Common/QuotedPrintable.h"
+#endif
 
 //-----------------------------------------------------------------------------
 // DEFINES ////////////////////////////////////////////////////////////////////
@@ -254,7 +261,7 @@ void PopulateCustomLadderComboBox()
 	CustomMatchPreferences pref;
 	AsciiString userPrefFilename;
 	Int localProfile = TheGameSpyInfo->getLocalProfileID();
-	userPrefFilename.format("GeneralsOnline\\CustomPref%d.ini", localProfile);
+	userPrefFilename.format("GeneralsOnline/CustomPref%d.ini", localProfile);
 	pref.load(userPrefFilename);
 
 	std::set<const LadderInfo *> usedLadders;
@@ -316,7 +323,22 @@ void PopupHostGameInit( WindowLayout *layout, void *userData )
 	textEntryGameNameID = TheNameKeyGenerator->nameToKey("PopupHostGame.wnd:TextEntryGameName");
 	textEntryGameName = TheWindowManager->winGetWindowFromId(parentPopup, textEntryGameNameID);
 	UnicodeString name;
+#if defined(SAGE_USE_NGMP)
+	{
+		CustomMatchPreferences pref;
+		AsciiString lastLobbyName = pref.getAsciiString("LastLobbyName", AsciiString::TheEmptyString);
+		if (!lastLobbyName.isEmpty())
+		{
+			name.translate(lastLobbyName.str());
+		}
+		else
+		{
+			name.translate("Generals Online Lobby");
+		}
+	}
+#else
 	name.translate(TheGameSpyInfo->getLocalName());
+#endif
 	GadgetTextEntrySetText(textEntryGameName, name);
 
 	textEntryGameDescriptionID = TheNameKeyGenerator->nameToKey("PopupHostGame.wnd:TextEntryGameDescription");
@@ -508,7 +530,7 @@ WindowMsgHandledType PopupHostGameSystem( GameWindow *window, UnsignedInt msg, W
 				{
 					if (pos >= 0)
 					{
-						Int ladderID = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(control, pos)));
+						Int ladderID = (Int)(intptr_t)GadgetComboBoxGetItemData(control, pos);
 						if (ladderID < 0)
 						{
 							// "Choose a ladder" selected - open overlay
@@ -539,9 +561,28 @@ WindowMsgHandledType PopupHostGameSystem( GameWindow *window, UnsignedInt msg, W
 				name.trim();
 				if(name.isEmpty())
 				{
-					name.translate(TheGameSpyInfo->getLocalName());
+					name.translate(TheGameSpyInfo ? TheGameSpyInfo->getLocalName() : "Player");
 					GadgetTextEntrySetText(textEntryGameName, name);
 				}
+#if defined(SAGE_USE_NGMP)
+				// save last used lobby name to CustomPref.ini
+				{
+					char buffer[256];
+					const WideChar* w = name.str();
+					int i = 0;
+					for (; w[i] != 0 && i < 255; ++i)
+					{
+						buffer[i] = (char)(w[i] & 0xFF);
+					}
+					buffer[i] = 0;
+
+					AsciiString lobbyNameAscii = buffer;
+
+					CustomMatchPreferences pref;
+					pref.setAsciiString("LastLobbyName", lobbyNameAscii);
+					pref.write();
+				}
+#endif
 				createGame();
 				parentPopup = nullptr;
 				GameSpyCloseOverlay(GSOVERLAY_GAMEOPTIONS);
@@ -564,6 +605,56 @@ WindowMsgHandledType PopupHostGameSystem( GameWindow *window, UnsignedInt msg, W
 
 void createGame()
 {
+#if defined(SAGE_USE_NGMP)
+	AsciiString defaultMap = getDefaultMap(true);
+	CustomMatchPreferences pref;
+	AsciiString storedMap = pref.getAsciiString("Map", AsciiString::TheEmptyString);
+	if (!storedMap.isEmpty())
+	{
+		AsciiString decoded = QuotedPrintableToAsciiString(storedMap);
+		decoded.trim();
+		if (!decoded.isEmpty() && isValidMap(decoded, TRUE))
+		{
+			defaultMap = decoded;
+		}
+	}
+	const MapMetaData* md = TheMapCache->findMap(defaultMap);
+	if (!md)
+	{
+		md = TheMapCache->findMap(getDefaultMap(true));
+	}
+
+	Bool limitArmies = GadgetCheckBoxIsChecked(checkBoxLimitArmies);
+	Bool useStats = GadgetCheckBoxIsChecked(checkBoxUseStats);
+	Bool bAllowObservers = GadgetCheckBoxIsChecked(checkBoxAllowObservers);
+
+	UnicodeString gameName = GadgetTextEntryGetText(textEntryGameName);
+
+	AsciiString passwd;
+	passwd.translate(GadgetTextEntryGetText(textEntryGamePassword));
+
+	NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+	if (!pLobbyInterface)
+	{
+		parentPopup = nullptr;
+		GameSpyCloseOverlay(GSOVERLAY_GAMEOPTIONS);
+		SetLobbyAttemptHostJoin(FALSE);
+		GSMessageBoxOk(TheGameText->fetch("GUI:Error"), UnicodeString(L"Failed to get Online Services Lobby Interface!"));
+		return;
+	}
+
+	UnicodeString mapDisplayName = md ? md->m_displayName : UnicodeString(L"Tournament Desert");
+	AsciiString mapPath = md ? md->m_fileName : AsciiString("Maps/Tournament Desert/Tournament Desert.map");
+	bool isOfficial = md ? md->m_isOfficial : true;
+	int numPlayers = md ? md->m_numPlayers : 8;
+
+	pLobbyInterface->CreateLobby(gameName, mapDisplayName, mapPath, isOfficial, numPlayers, limitArmies, useStats, TheGlobalData->m_defaultStartingCash.countMoney(), passwd.isNotEmpty(), std::string(passwd.str()), bAllowObservers);
+
+	// GeneralsX @bugfix fbraz3 17/08/2026 Use GSMessageBoxCancel with literal strings for non-blocking dismissible lobby creation popup
+	GSMessageBoxCancel(UnicodeString(L"Creating Lobby"), UnicodeString(L"Lobby Creation is in progress..."), nullptr);
+
+	return;
+#else
 	TheGameSpyInfo->setCurrentGroupRoom(0);
 	PeerRequest req;
 	UnicodeString gameName = GadgetTextEntryGetText(textEntryGameName);
@@ -597,8 +688,7 @@ void createGame()
 	req.stagingRoomCreation.ladPort = 0;
 	if (ladderSelectPos >= 0)
 	{
-		// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-		ladderID = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(comboBoxLadderName, ladderSelectPos)));
+		ladderID = (Int)(intptr_t)GadgetComboBoxGetItemData(comboBoxLadderName, ladderSelectPos);
 		if (ladderID != 0)
 		{
 			// actual ladder
@@ -615,4 +705,5 @@ void createGame()
 	req.hostPingStr = TheGameSpyInfo->getPingString().str();
 
 	TheGameSpyPeerMessageQueue->addRequest(req);
+#endif
 }

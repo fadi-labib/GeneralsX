@@ -43,7 +43,18 @@
 #include "Common/FramePacer.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
+#include "Common/GameLOD.h"
 #include "Common/GameState.h"
+
+// GeneralsX @feature Meeseeks 28/08/2026 Deep CRC platform headers for system telemetry
+#if DEEP_CRC_TO_MEMORY
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/utsname.h>
+#include <SDL3/SDL.h>
+#endif
+#endif
 #include "Common/GameUtility.h"
 #include "Common/INI.h"
 #include "Common/LatchRestore.h"
@@ -61,7 +72,9 @@
 #include "Common/ThingFactory.h"
 #include "Common/Team.h"
 #include "Common/ThingTemplate.h"
-#include "GameClient/Water.h"
+#if RTS_GENERALS && RETAIL_COMPATIBLE_CRC
+#include "Common/TunnelTracker.h"
+#endif
 #include "Common/WellKnownKeys.h"
 #include "Common/Xfer.h"
 #include "Common/XferCRC.h"
@@ -80,6 +93,7 @@
 #include "GameClient/View.h"
 #include "GameClient/CampaignManager.h"
 #include "GameClient/GameWindowTransitions.h"
+#include "GameClient/Water.h"
 
 #include "GameLogic/AI.h"
 #include "GameLogic/AIPathfind.h"
@@ -231,28 +245,10 @@ void setFPMode()
 	#endif
 }
 
-//-------------------------------------------------------------------------------------------------
-const char* toString(GameMode mode)
+// ------------------------------------------------------------------------------------------------
+UnsignedShort GameLogic::getSuperweaponRestriction() const
 {
-	switch (mode)
-	{
-		case GAME_SINGLE_PLAYER:
-			return "GAME_SINGLE_PLAYER";
-		case GAME_LAN:
-			return "GAME_LAN";
-		case GAME_SKIRMISH:
-			return "GAME_SKIRMISH";
-		case GAME_REPLAY:
-			return "GAME_REPLAY";
-		case GAME_SHELL:
-			return "GAME_SHELL";
-		case GAME_INTERNET:
-			return "GAME_INTERNET";
-		case GAME_NONE:
-			return "GAME_NONE";
-		default:
-			return "GAME_UNKNOWN";
-	}
+  return TheGameInfo ? TheGameInfo->getSuperweaponRestriction() : 0;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -272,7 +268,18 @@ GameLogic::GameLogic()
 		m_progressCompleteTimeout[i] = 0;
 	}
 
-	m_shouldValidateCRCs = FALSE;
+	m_shouldValidateCRCs = 0;
+
+#if DEEP_CRC_TO_MEMORY
+	m_crcBufferIndex = 0;
+
+	m_crcWriteBuffer.resize(1024 * 1024 * 8);
+
+	for (size_t i = 0; i < ARRAY_SIZE(m_crcBuffers); ++i)
+	{
+		m_crcBuffers[i].resize(1024 * 1024);
+	}
+#endif
 
 	m_startNewGame = FALSE;
 
@@ -305,16 +312,24 @@ GameLogic::GameLogic()
 	m_loadingMap = FALSE;
 	m_loadingSave = FALSE;
 	m_clearingGameData = FALSE;
+
+#if RTS_GENERALS && defined(_MSC_VER) && _MSC_VER < 1300
+	m_onUnitProducedZeroInit = false;
+#endif
 }
 
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
-Bool GameLogic::isInSinglePlayerGame()
+Bool GameLogic::isInSinglePlayerGame() const
 {
-	return (m_gameMode == GAME_SINGLE_PLAYER ||
-		(TheRecorder && TheRecorder->isPlaybackMode() && TheRecorder->getGameMode() == GAME_SINGLE_PLAYER));
-}
+	if (rts::isSinglePlayerGame(m_gameMode))
+		return true;
 
+	if (TheRecorder && TheRecorder->isPlaybackMode() && rts::isSinglePlayerGame(TheRecorder->getGameMode()))
+		return true;
+
+	return false;
+}
 
 //-------------------------------------------------------------------------------------------------
 /** Destroy all objects immediately */
@@ -342,6 +357,8 @@ void GameLogic::destroyAllObjectsImmediate()
 	// process the destroy list immediately
 	processDestroyList();
 	DEBUG_ASSERTCRASH( m_objList == nullptr, ("destroyAllObjectsImmediate: Object list not cleared") );
+
+	m_objHash.clear();
 
 }
 
@@ -437,14 +454,6 @@ void GameLogic::reset()
 	m_thingTemplateBuildableOverrides.clear();
 	m_controlBarOverrides.clear();
 
-	// set the hash to be rather large. We need to optimize this value later.
-	m_objHash.clear();
-#if USING_STLPORT
-	m_objHash.resize(OBJ_HASH_SIZE);
-#else
-	m_objHash.reserve(OBJ_HASH_SIZE);
-#endif
-
 	m_pauseFrame = 0;
 	m_pauseSound = FALSE;
 	m_pauseMusic = FALSE;
@@ -458,6 +467,13 @@ void GameLogic::reset()
 
 	// destroy all objects
 	destroyAllObjectsImmediate();
+
+	// set the hash to be rather large. We need to optimize this value later.
+#if USING_STLPORT
+	m_objHash.resize(OBJ_HASH_SIZE);
+#else
+	m_objHash.reserve(OBJ_HASH_SIZE);
+#endif
 
 	m_nextObjID = (ObjectID)1;
 
@@ -523,7 +539,6 @@ static Object * placeObjectAtPosition(Int slotNum, AsciiString objectTemplateNam
 		obj->setOrientation(obj->getTemplate()->getPlacementViewAngle());
 		obj->setPosition( &pos );
 
-		//DEBUG_LOG(("Placed a starting building for %s at waypoint %s", playerName.str(), waypointName.str()));
 		CRCDEBUG_LOG(("Placed an object for %ls at pos (%g,%g,%g)", pPlayer->getPlayerDisplayName().str(),
 			pos.x, pos.y, pos.z));
 		DUMPCOORD3D(&pos);
@@ -835,7 +850,7 @@ static void populateRandomStartPosition( GameInfo *game )
 				{
 					Coord3D p1 = c1->second;
 					Coord3D p2 = c2->second;
-					startSpotDistance[i][j] = WWMath::SqrtOrigin( sqr(p1.x-p2.x) + sqr(p1.y-p2.y) );
+					startSpotDistance[i][j] = WWMath::Sqrt( sqr(p1.x-p2.x) + sqr(p1.y-p2.y) );
 				}
 			}
 			else
@@ -1229,10 +1244,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	#ifdef DUMP_PERF_STATS
 	GetPrecisionTimer(&endTime64);
-	char Buf[256];
-	sprintf(Buf,"After terrainlogic->loadmap=%f",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
-		//DEBUG_LOG(("Placed a starting building for %s at waypoint %s", playerName.str(), waypointName.str()));
-	DEBUG_LOG(("%s", Buf));
+	DEBUG_LOG(("After terrainlogic->loadmap=%f", ((double)(endTime64-startTime64)/(double)(freq64)*1000.0)));
 	#endif
 
 	Int localSlot = 0;
@@ -1342,7 +1354,8 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			d.setInt(TheKey_multiplayerStartIndex, slot->getStartPos());
 //			d.setBool(TheKey_multiplayerIsLocal, slot->isLocalPlayer());
 //			d.setBool(TheKey_multiplayerIsLocal, slot->getIP() == game->getLocalIP());
-			d.setBool(TheKey_multiplayerIsLocal, slot->isHuman() && (slot->getName().compare(TheGameInfo->getSlot(TheGameInfo->getLocalSlotNum())->getName().str()) == 0));
+			const Bool isLocalPlayer = slot->isHuman() && i == TheGameInfo->getLocalSlotNum();
+			d.setBool(TheKey_multiplayerIsLocal, isLocalPlayer);
 
 /*
 			if (slot->getIP() == game->getLocalIP())
@@ -1363,9 +1376,8 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 				}
 			}
 
-			AsciiString slotNameAscii;
-			slotNameAscii.translate(slot->getName());
-			if (slot->isHuman() && TheGameInfo->getSlotNum(slotNameAscii) == TheGameInfo->getLocalSlotNum()) {
+			if (isLocalPlayer)
+			{
 				localSlot = i;
 			}
 			TheSidesList->addSide(&d);
@@ -1604,8 +1616,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	#ifdef DUMP_PERF_STATS
 	GetPrecisionTimer(&endTime64);
-	sprintf(Buf,"After terrainlogic->newmap=%f",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
-	DEBUG_LOG(("%s", Buf));
+	DEBUG_LOG(("After terrainlogic->newmap=%f", ((double)(endTime64-startTime64)/(double)(freq64)*1000.0)));
 	#endif
 
 		// Special case, load any bridge map objects.
@@ -1676,13 +1687,11 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			if (!slot || !slot->isOccupied())
 				continue;
 
-			AsciiString playerName;
-			playerName.format("player%d", i);
-			Player *player = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(playerName));
+			Player *player = ThePlayerList->getPlayerFromSlotIndex(i);
 
 			if (slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
 			{
-				DEBUG_LOG(("Clearing shroud for observer %s in playerList slot %d", playerName.str(), player->getPlayerIndex()));
+				DEBUG_LOG(("Clearing shroud for observer in slot %d with player index %d", i, player->getPlayerIndex()));
 				ThePartitionManager->revealMapForPlayerPermanently( player->getPlayerIndex() );
 			}
 			else
@@ -1696,8 +1705,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	#ifdef DUMP_PERF_STATS
 	GetPrecisionTimer(&endTime64);
-	sprintf(Buf,"Before loading objects=%f",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
-	DEBUG_LOG(("%s", Buf));
+	DEBUG_LOG(("Before loading objects=%f", ((double)(endTime64-startTime64)/(double)(freq64)*1000.0)));
 	#endif
 
 	if( loadingSaveGame == FALSE )
@@ -1798,8 +1806,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	#ifdef DUMP_PERF_STATS
 	GetPrecisionTimer(&endTime64);
-	sprintf(Buf,"After loading objects=%f",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
-	DEBUG_LOG(("%s", Buf));
+	DEBUG_LOG(("After loading objects=%f", ((double)(endTime64-startTime64)/(double)(freq64)*1000.0)));
 	#endif
 
 	// place initial network buildings/units
@@ -1813,9 +1820,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			if (!slot || !slot->isOccupied())
 				continue;
 
-			AsciiString playerName;
-			playerName.format("player%d", i);
-			Player *player = ThePlayerList->findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(playerName));
+			Player *player = ThePlayerList->getPlayerFromSlotIndex(i);
 
 			if (slot->getPlayerTemplate() == PLAYERTEMPLATE_OBSERVER)
 			{
@@ -1936,8 +1941,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	#ifdef DUMP_PERF_STATS
 	GetPrecisionTimer(&endTime64);
-	sprintf(Buf,"After partition manager update=%f",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
-	DEBUG_LOG(("%s", Buf));
+	DEBUG_LOG(("After partition manager update=%f", ((double)(endTime64-startTime64)/(double)(freq64)*1000.0)));
 	#endif
 
 
@@ -1981,6 +1985,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	// if we're in a load game, don't fade yet
 	if(loadingSaveGame == FALSE && TheTransitionHandler != nullptr && m_loadScreen)
 	{
+		TheFramePacer->reset();
 		TheTransitionHandler->setGroup("FadeWholeScreen");
 		while(!TheTransitionHandler->isFinished())
 		{
@@ -2013,8 +2018,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 
 	#ifdef DUMP_PERF_STATS
 	GetPrecisionTimer(&endTime64);
-	sprintf(Buf,"After delete load screen=%f",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
-	DEBUG_LOG(("%s", Buf));
+	DEBUG_LOG(("After delete load screen=%f", ((double)(endTime64-startTime64)/(double)(freq64)*1000.0)));
 	#endif
 
 	if(m_gameMode == GAME_SHELL)
@@ -2137,14 +2141,25 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 		TheGameSpyBuddyMessageQueue->addRequest(req);
 	}
 
+  if( loadingSaveGame == FALSE )
+  {
+    // Drawables need to do some work on level start; give them a chance to do it
+    Drawable * drawable = TheGameClient->getDrawableList();
+
+    while ( drawable != nullptr )
+    {
+      drawable->onLevelStart();
+      drawable = drawable->getNextDrawable();
+    }
+  }
+
 	//ReAllows quit menu to work during loading scene
 	//setGameLoading(FALSE);
 	setLoadingMap( FALSE );
 
 #ifdef DUMP_PERF_STATS
 	GetPrecisionTimer(&endTime64);
-	sprintf(Buf,"Total startnewgame=%f",((double)(endTime64-startTime64)/(double)(freq64)*1000.0));
-	DEBUG_LOG(("%s", Buf));
+	DEBUG_LOG(("Total startnewgame=%f", ((double)(endTime64-startTime64)/(double)(freq64)*1000.0)));
 #endif
 
 	//Assume that getting this far means we've successfully entered an online game.
@@ -2211,16 +2226,17 @@ void GameLogic::loadMapINI( AsciiString mapName )
 		return;
 	}
 
-	// back up over the ".map" extension and to the first directory separator
-	char *extension = filename + length - 4;
-	while ((extension > filename) && (*extension != '\\') && (*extension != '/')) {
-		--extension;
+	// cut the map file name off to get the map directory
+	char *separator = getLastPathSeparator(filename);
+	if (separator) {
+		*separator = 0;
+	} else {
+		filename[0] = 0;
 	}
-	*extension = 0;
 
 
 	char fullFledgeFilename[_MAX_PATH];
-	snprintf(fullFledgeFilename, ARRAY_SIZE(fullFledgeFilename), "%s\\map.ini", filename);
+	snprintf(fullFledgeFilename, ARRAY_SIZE(fullFledgeFilename), "%s/map.ini", filename);
 	if (TheFileSystem->doesFileExist(fullFledgeFilename)) {
 		DEBUG_LOG(("Loading map.ini"));
 		INI ini;
@@ -2230,7 +2246,7 @@ void GameLogic::loadMapINI( AsciiString mapName )
 	// TheSuperHackers @todo Implement ini load directory for map folder.
 	// Requires adjustments in map transfer.
 
-	snprintf(fullFledgeFilename, ARRAY_SIZE(fullFledgeFilename), "%s\\solo.ini", filename);
+	snprintf(fullFledgeFilename, ARRAY_SIZE(fullFledgeFilename), "%s/solo.ini", filename);
 	if (TheFileSystem->doesFileExist(fullFledgeFilename)) {
 		DEBUG_LOG(("Loading solo.ini"));
 		INI ini;
@@ -2337,7 +2353,7 @@ void GameLogic::processDestroyList()
 void GameLogic::processCommandList( CommandList *list )
 {
 	m_cachedCRCs.clear();
-	m_shouldValidateCRCs = FALSE;
+	m_shouldValidateCRCs = 0;
 
 	GameMessage* msg;
 
@@ -2349,7 +2365,7 @@ void GameLogic::processCommandList( CommandList *list )
 		logicMessageDispatcher( msg, nullptr );
 	}
 
-	if (m_shouldValidateCRCs && !TheNetwork->sawCRCMismatch())
+	if (m_shouldValidateCRCs == 1 && !TheNetwork->sawCRCMismatch())
 	{
 		Bool sawCRCMismatch = FALSE;
 		Int numPlayers = 0;
@@ -2409,6 +2425,73 @@ void GameLogic::processCommandList( CommandList *list )
 			// GeneralsX @build GitHubCopilot 12/04/2026 Dump frame CRC set to stderr so Linux/macOS logs can be compared directly.
 			/* 			fprintf(stderr, "[LAN86] CRC mismatch summary frame=%u cached=%zu players=%d\n",
 				m_frame, m_cachedCRCs.size(), numPlayers); */
+#if DEEP_CRC_TO_MEMORY
+			UnsignedInt flagPlayersConnected = 0;
+			UnsignedInt flagCRCs = 0;
+
+			for (Int i = 0; i < MAX_SLOTS; ++i)
+			{
+				if (TheNetwork->isPlayerConnected(i))
+				{
+					flagPlayersConnected |= (1U << i);
+				}
+			}
+
+			for (std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
+			{
+				flagCRCs |= (1U << (crcIt->first - 2)); // neutral and civilian players take the first two slots
+			}
+
+			UnicodeString strMismatchDetails;
+			strMismatchDetails.format(L"GameLogic frame %d, latest frame %d\nHad %d CRCs from %d players; Flags %d, %d\nMismatched Players:\n",
+				TheGameLogic->getFrame(),
+				TheGameLogic->getFrame() - TheNetwork->getRunAhead() - 1,
+				m_cachedCRCs.size(),
+				numPlayers,
+				flagPlayersConnected,
+				flagCRCs);
+
+			std::map<UnsignedInt, int> mapCRCOccurences;
+			for (std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
+			{
+				std::map<UnsignedInt, int>::iterator occurIt = mapCRCOccurences.find(crcIt->second);
+				if (occurIt != mapCRCOccurences.end())
+				{
+					++occurIt->second;
+				}
+				else
+				{
+					mapCRCOccurences[crcIt->second] = 1;
+				}
+			}
+
+			int biggestCRCCount = -1;
+			UnsignedInt biggestCRC = ~0u;
+
+			for (std::map<UnsignedInt, int>::iterator crcIter = mapCRCOccurences.begin(); crcIter != mapCRCOccurences.end(); ++crcIter)
+			{
+				if (crcIter->second > biggestCRCCount)
+				{
+					biggestCRC = crcIter->first;
+					biggestCRCCount = crcIter->second;
+				}
+			}
+
+			for (std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
+			{
+				if (crcIt->second != biggestCRC)
+				{
+					Player* player = ThePlayerList->getNthPlayer(crcIt->first);
+					UnicodeString strPlayerInfo;
+					strPlayerInfo.format(L"player %d (%ls) = %X [MISMATCH]\n", crcIt->first, player ? player->getPlayerDisplayName().str() : L"<NONE>", crcIt->second);
+
+					strMismatchDetails.concat(strPlayerInfo);
+				}
+			}
+
+			TheGameLogic->writeCRCBuffersToDisk(TheGameLogic->getFrame() - TheNetwork->getRunAhead() - 1);
+			TheNetwork->setSawCRCMismatch(strMismatchDetails);
+#else
 			for (std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
 			{
 				Player *player = ThePlayerList->getNthPlayer(crcIt->first);
@@ -2425,6 +2508,7 @@ void GameLogic::processCommandList( CommandList *list )
 			}
 #endif // DEBUG_LOGGING
 			TheNetwork->setSawCRCMismatch();
+#endif
 		}
 	}
 
@@ -2875,6 +2959,40 @@ void GameLogic::friend_awakenUpdateModule(Object* obj, UpdateModulePtr u, Unsign
 	}
 }
 
+#if RTS_GENERALS && RETAIL_COMPATIBLE_CRC
+// ------------------------------------------------------------------------------------------------
+// Find the tunnel tracker that contains the object and destroy all objects in the contain list
+// ------------------------------------------------------------------------------------------------
+void GameLogic::friend_destroyInTunnelContain(const Object* strandedObject)
+{
+	for (Int i = 0; i < ThePlayerList->getPlayerCount(); ++i)
+	{
+		TunnelTracker* tracker = ThePlayerList->getNthPlayer(i)->getTunnelSystem();
+		if (!tracker)
+			continue;
+
+		const ContainedItemsList& list = *tracker->getContainedItemsList();
+
+		const ContainedItemsList::const_iterator it = std::find(list.begin(), list.end(), strandedObject);
+		if (it == list.end())
+			continue;
+
+		while (!list.empty())
+		{
+			Object* obj = list.front();
+
+			tracker->removeFromContain(obj);
+
+			obj->onRemovedFrom(nullptr);
+
+			destroyObject(obj);
+		}
+
+		break;
+	}
+}
+#endif
+
 // ------------------------------------------------------------------------------------------------
 #ifdef DO_UNIT_TIMINGS
 	enum {TIME_FRAMES=100};
@@ -2999,13 +3117,12 @@ static void unitTimings()
 		if (veryFirstTime) {
 			thingName = "No Object";
 		}
-		sprintf(foo, "\nTime %f, %d ms for 100 %s , noPart %f, noSpawn %f logic %f \n", timeAll,
+		DEBUG_LOG(("\nTime %f, %d ms for 100 %s , noPart %f, noSpawn %f logic %f \n", timeAll,
 			(Int)(timeAll*1000/TIME_FRAMES), thingName.str(), timeNoPart,
-			timeNoSpawn, timeLogic);
-		DEBUG_LOG((foo));
+			timeNoSpawn, timeLogic));
 		sprintf(foo, "\nDrawCalls for 100 %s , all %d, noPart %d, noSpawn %d logic %d \n", thingName.str(),
 			drawCallAll,drawCallNoPart,drawCallNoSpawn, drawCallLogic);
-		DEBUG_LOG((foo));
+		DEBUG_LOG(("%s", foo));
 
 		if (g_UT_timingLog) {
 			fputs(foo, g_UT_timingLog);
@@ -3056,8 +3173,8 @@ static void unitTimings()
 		if (g_UT_curThing->getName()==SINGLE_UNIT) {
 			return;
 		}
-		while (g_UT_curThing->friend_getNextTemplate()
-			&& g_UT_curThing->friend_getNextTemplate()->getName()!=SINGLE_UNIT)
+		while (g_UT_curThing->friend_getNextTemplate() &&
+			g_UT_curThing->friend_getNextTemplate()->getName()!=SINGLE_UNIT)
 			g_UT_curThing = g_UT_curThing->friend_getNextTemplate();
 
 	}
@@ -3205,6 +3322,9 @@ void GameLogic::update()
 	USE_PERF_TIMER(GameLogic_update)
 	PROFILER_SECTION_COLOR(0x4CAF50);
 
+	// GeneralsX @bugfix fbraz3 16/07/2026 Lock FPU state before every simulation frame
+	ScopedFPUGuard fpuGuard;
+
 	LatchRestore<Bool> inUpdateLatch(m_isInUpdate, TRUE);
 #ifdef DO_UNIT_TIMINGS
 	unitTimings();
@@ -3226,17 +3346,13 @@ void GameLogic::update()
 		m_startNewGame = FALSE;
 
 	#ifdef DUMP_PERF_STATS
-		char Buf[1024];
 		__int64 freq64;
 		GetPrecisionTimerTicksPerSec(&freq64);
 
-		sprintf(Buf,"Texture=%f, Anim=%f, CreateRobj=%f, Load3DAssets=%f",
-			((double)Total_Get_Texture_Time/(double)(freq64)*1000.0),
+		DEBUG_LOG(("Texture=%f, Anim=%f, CreateRobj=%f, Load3DAssets=%f", ((double)Total_Get_Texture_Time/(double)(freq64)*1000.0),
 			((double)Total_Get_HAnim_Time/(double)(freq64)*1000.0),
 			((double)Total_Create_Render_Obj_Time/(double)(freq64)*1000.0),
-			((double)Total_Load_3D_Assets/(double)(freq64)*1000.0));
-
-	DEBUG_LOG(("%s", Buf));
+			((double)Total_Load_3D_Assets/(double)(freq64)*1000.0)));
 	#endif
 	}
 
@@ -3268,6 +3384,12 @@ void GameLogic::update()
 	Bool isMPGameOrReplay = (TheRecorder && TheRecorder->isMultiplayer() && getGameMode() != GAME_SHELL && getGameMode() != GAME_NONE);
 	Bool isSoloGameOrReplay = (TheRecorder && !TheRecorder->isMultiplayer() && getGameMode() != GAME_SHELL && getGameMode() != GAME_NONE);
 	Bool generateForMP = (isMPGameOrReplay && (m_frame % TheGameInfo->getCRCInterval()) == 0);
+#if RETAIL_COMPATIBLE_CRC
+	// TheSuperHackers @info The local player of a network game only goes in game on logic frame 1.
+	// Retail clients therefore never sent the CRC of logic frame 0, and their replays do not contain it.
+	if (generateForMP && m_frame == 0 && rts::isMultiplayerGame(TheRecorder->getGameMode()))
+		generateForMP = FALSE;
+#endif
 #ifdef DEBUG_CRC
 	Bool generateForSolo = isSoloGameOrReplay && ((m_frame && (m_frame%100 == 0)) ||
 		(getFrame() >= TheCRCFirstFrameToLog && getFrame() < TheCRCLastFrameToLog && ((m_frame % REPLAY_CRC_INTERVAL) == 0)));
@@ -3278,11 +3400,14 @@ void GameLogic::update()
 	if (generateForSolo || generateForMP)
 	{
 		m_CRC = getCRC( CRC_RECALC );
-		bool isPlayback = (TheRecorder && TheRecorder->isPlaybackMode());
 
-		GameMessage *msg = newInstance(GameMessage)(GameMessage::MSG_LOGIC_CRC);
+		// TheSuperHackers @tweak Caball009 30/09/2026 Playback CRC is now separate from regular CRC,
+		// removing the need for the second parameter used to distinguish them. Older clients can still
+		// parse newer replays because GameMessage::getArgument returns false for the missing playback argument.
+		const bool isPlayback = TheRecorder && TheRecorder->isPlaybackMode();
+		const GameMessage::Type msgType = isPlayback ? GameMessage::MSG_LOGIC_CRC_PLAYBACK : GameMessage::MSG_LOGIC_CRC;
+		GameMessage *msg = newInstance(GameMessage)(msgType);
 		msg->appendIntegerArgument(m_CRC);
-		msg->appendBooleanArgument(isPlayback);
 
 		// TheSuperHackers @info helmutbuhler 13/04/2025
 		// During replay simulation, we bypass TheMessageStream and instead put the CRC message
@@ -3377,7 +3502,7 @@ void GameLogic::update()
 			{
 				USE_PERF_TIMER(GameLogic_update_sleepy)
 
-				//DEBUG_LOG(("calling update %08lx (%d %d)...",update,update->friend_getNextCallFrame(),update->friend_getNextCallPhase()));
+				//DEBUG_LOG(("calling update %08lx (%d %d)...",u,u->friend_getNextCallFrame(),u->friend_getNextCallPhase()));
 				m_curUpdateModule = u;
 
 				sleepLen = u->update();
@@ -3490,7 +3615,7 @@ void GameLogic::addObjectToLookupTable( Object *obj )
 	if( obj == nullptr )
 		return;
 
-	// add to lookup
+	// add to lookup table
 	m_objHash[ obj->getID() ] = obj;
 
 }
@@ -3639,7 +3764,13 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 
 	XferCRC *xferCRC;
 	AsciiString marker;
-	if (deepCRCFileName.isNotEmpty())
+#if DEEP_CRC_TO_MEMORY
+	const Bool forceDeepCRC = TRUE;
+#else
+	const Bool forceDeepCRC = FALSE;
+#endif
+
+	if (forceDeepCRC || deepCRCFileName.isNotEmpty())
 	{
 		xferCRC = NEW XferDeepCRC;
 		xferCRC->open(deepCRCFileName.str());
@@ -3741,9 +3872,43 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 		TheGameState->friend_xferSaveDataForCRC(xferCRC, SNAPSHOT_DEEPCRC_LOGICONLY);
 	}
 
-	xferCRC->close();
+	const UnsignedInt theCRC = xferCRC->getCRC();
 
-	UnsignedInt theCRC = xferCRC->getCRC();
+#if DEEP_CRC_TO_MEMORY
+	AsciiString tmp;
+	tmp.format("[ frame %d: %8.8X, logical seeds: %8.8X ]", m_frame, theCRC, GetGameLogicRandomSeed());
+
+	xferCRC->xferLogString(tmp);
+
+	for (Int j = 0; j < ThePlayerList->getPlayerCount(); ++j)
+	{
+		if (Player* player = ThePlayerList->getNthPlayer(j))
+		{
+			tmp.format("[ Player (%d) money: %d, energy: %d | %d ]",
+				j, player->getMoney()->countMoney(), player->getEnergy()->getProduction(), player->getEnergy()->getConsumption());
+
+			xferCRC->xferLogString(tmp);
+		}
+	}
+
+	for (obj = m_objList; obj; obj=obj->getNextObject())
+	{
+		XferCRC tmpXfer;
+		tmpXfer.open("");
+		tmpXfer.xferUser(const_cast<Matrix3D*>(obj->getTransformMatrix()), sizeof(Matrix3D));
+		tmpXfer.close();
+
+		const UnsignedInt mtxCRC = tmpXfer.getCRC();
+
+		tmp.format("[ CRC of object: %d (%s), player: %d, team: %d, health: %f, pos: %f %f %f, mtx: %8.8X ]",
+			obj->getID(), obj->getTemplate()->getName().str(), obj->getControllingPlayer()->getPlayerIndex(), (obj->getTeam() ? obj->getTeam()->getID() : TEAM_ID_INVALID),
+			obj->getBodyModule()->getHealth(), obj->getPosition()->x, obj->getPosition()->y, obj->getPosition()->z, mtxCRC);
+
+		xferCRC->xferLogString(tmp);
+	}
+#endif
+
+	xferCRC->close();
 
 	delete xferCRC;
 	xferCRC = nullptr;
@@ -4908,3 +5073,128 @@ void GameLogic::loadPostProcess()
 	remakeSleepyUpdate();
 
 }
+
+#if DEEP_CRC_TO_MEMORY
+std::vector<UnsignedByte>& GameLogic::getCRCBuffer()
+{
+	return m_crcWriteBuffer;
+}
+
+void GameLogic::storeCRCBuffer(size_t size)
+{
+	std::vector<UnsignedByte>& vec = m_crcBuffers[m_crcBufferIndex++ % ARRAY_SIZE(m_crcBuffers)];
+
+	vec.clear();
+	vec.insert(vec.begin(), m_crcWriteBuffer.begin(), m_crcWriteBuffer.begin() + size);
+}
+
+void GameLogic::writeCRCBuffersToDisk(UnsignedInt frame) const
+{
+	AsciiString str;
+	// GeneralsX @feature Meeseeks 28/08/2026 Generate OS/Arch header with Windows support
+	AsciiString headerStr;
+#ifdef _WIN32
+	SYSTEM_INFO sysInfo;
+	typedef VOID (WINAPI *PFN_GetNativeSystemInfo)(LPSYSTEM_INFO);
+	HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+	PFN_GetNativeSystemInfo pGetNativeSystemInfo = kernel32 ? (PFN_GetNativeSystemInfo)GetProcAddress(kernel32, "GetNativeSystemInfo") : nullptr;
+	if (pGetNativeSystemInfo)
+	{
+		pGetNativeSystemInfo(&sysInfo);
+	}
+	else
+	{
+		GetSystemInfo(&sysInfo);
+	}
+
+	MEMORYSTATUSEX memStatus;
+	memStatus.dwLength = sizeof(memStatus);
+	BOOL memOk = GlobalMemoryStatusEx(&memStatus);
+	int totalRamMB = memOk ? (int)(memStatus.ullTotalPhys / (1024 * 1024)) : 0;
+	const char* archName = (sysInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64) ? "x86_64" :
+	                       (sysInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64) ? "arm64" : "x86";
+	headerStr.format("GeneralsX: Windows\nArch: %s\nCPU Cores: %u\nRAM: %d MB\n\n",
+	                 archName, (unsigned int)sysInfo.dwNumberOfProcessors, totalRamMB);
+#else
+	struct utsname sysInfo;
+	if (uname(&sysInfo) == 0) {
+		headerStr.format("GeneralsX: %s %s (%s)\nArch: %s\nCPU Cores: %d\nRAM: %d MB\n\n",
+						 sysInfo.sysname, sysInfo.release, sysInfo.version, sysInfo.machine,
+						 SDL_GetNumLogicalCPUCores(), SDL_GetSystemRAM());
+	} else {
+		headerStr = "GeneralsX: Unknown OS/Arch\n\n";
+	}
+#endif
+
+	// Format filename as deep_crc_YYYY-MM-DD-HH-MM-SS_f<frame>.bin inside user data Debug dir
+	time_t t = time(nullptr);
+	struct tm *tm_info = localtime(&t);
+	char timebuf[32];
+	strftime(timebuf, 32, "%Y-%m-%d-%H-%M-%S", tm_info);
+
+	// TheGlobalData->getPath_UserData() gives standard document path
+	// Let's create Debug dir if not exists (in cross-platform way, handled by file system)
+	AsciiString logDir;
+	logDir.format("%sDebug", TheGlobalData->getPath_UserData().str());
+	TheFileSystem->createDirectory(logDir);
+
+#ifdef _WIN32
+	str.format("%s\\deep_crc_%s_f%u.bin", logDir.str(), timebuf, frame);
+#else
+	str.format("%s/deep_crc_%s_f%u.bin", logDir.str(), timebuf, frame);
+#endif
+
+	FILE* fp = fopen(str.str(), "wb");
+	if (fp)
+	{
+		constexpr const char version[] = "[ DEEP CRC DATA (VERSION 1.0.0) ]\n";
+
+		if (fwrite(&version[0], ARRAY_SIZE(version) - 1, 1, fp) != 1)
+		{
+			fclose(fp);
+			return;
+		}
+
+		if (fwrite(headerStr.str(), headerStr.getLength(), 1, fp) != 1)
+		{
+			fclose(fp);
+			return;
+		}
+
+		// GeneralsX @tweak Meeseeks 28/08/2026 Count and report actual serialized non-empty frames written
+		size_t framesWritten = 0;
+		size_t oldest = (m_crcBufferIndex >= ARRAY_SIZE(m_crcBuffers)) ? m_crcBufferIndex % ARRAY_SIZE(m_crcBuffers) : 0;
+		for (size_t i = 0; i < ARRAY_SIZE(m_crcBuffers); ++i)
+		{
+			size_t readIndex = (oldest + i) % ARRAY_SIZE(m_crcBuffers);
+			const std::vector<UnsignedByte>& vec = m_crcBuffers[readIndex];
+
+			if (vec.size() > 0)
+			{
+				if (fwrite(vec.data(), vec.size(), 1, fp) != 1)
+				{
+					fclose(fp);
+					return;
+				}
+				++framesWritten;
+			}
+		}
+
+		if (fclose(fp) == 0)
+		{
+			fprintf(stderr, "[DeepCRC] Desync detected! Wrote %zu frames of state telemetry to %s\n", framesWritten, str.str());
+			fflush(stderr);
+		}
+		else
+		{
+			fprintf(stderr, "[DeepCRC] Failed to flush and close %s\n", str.str());
+			fflush(stderr);
+		}
+	}
+	else
+	{
+		fprintf(stderr, "[DeepCRC] Failed to open %s for writing desync memory dump\n", str.str());
+		fflush(stderr);
+	}
+}
+#endif

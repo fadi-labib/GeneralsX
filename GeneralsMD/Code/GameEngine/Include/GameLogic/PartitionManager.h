@@ -151,7 +151,9 @@ enum DistanceCalculationType CPP_11(: Int)
 	FROM_CENTER_2D					= 0,	///< measure from Object center in 2d.
 	FROM_CENTER_3D					= 1,	///< measure from Object center in 3d.
 	FROM_BOUNDINGSPHERE_2D	= 2,	///< measure from Object bounding sphere in 2d.
-	FROM_BOUNDINGSPHERE_3D	= 3		///< measure from Object bounding sphere in 3d.
+	FROM_BOUNDINGSPHERE_3D	= 3,	///< measure from Object bounding sphere in 3d.
+
+	DISTANCE_CALCULATION_TYPE_COUNT
 };
 
 //=====================================
@@ -1391,7 +1393,7 @@ public:
 	void getVectorTo(const Object *obj, const Object *otherObj, DistanceCalculationType dc, Coord3D& vec);
 	void getVectorTo(const Object *obj, const Coord3D *pos, DistanceCalculationType dc, Coord3D& vec);
 
-	// just like 'getDistance', but return the dist-sqr, meaning we save a WWMath::SqrtOrigin() call if you don't need it.
+	// just like 'getDistance', but return the dist-sqr, meaning we save a sqrt() call if you don't need it.
 	Real getDistanceSquared(const Object *obj, const Object *otherObj, DistanceCalculationType dc, Coord3D *vec = nullptr);
 	Real getDistanceSquared(const Object *obj, const Coord3D *pos, DistanceCalculationType dc, Coord3D *vec = nullptr);
 

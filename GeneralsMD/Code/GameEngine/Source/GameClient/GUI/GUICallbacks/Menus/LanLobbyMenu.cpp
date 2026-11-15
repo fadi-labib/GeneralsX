@@ -31,7 +31,6 @@
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
-#include "Lib/BaseType.h"
 #include "Common/crc.h"
 #include "Common/GameEngine.h"
 #include "Common/GlobalData.h"
@@ -305,7 +304,7 @@ static NameKeyType buttonClearID = NAMEKEY_INVALID;
 static NameKeyType buttonHostID = NAMEKEY_INVALID;
 static NameKeyType buttonJoinID = NAMEKEY_INVALID;
 static NameKeyType buttonDirectConnectID = NAMEKEY_INVALID;
-static NameKeyType buttonEmoteID = NAMEKEY_INVALID;
+static NameKeyType buttonChatID = NAMEKEY_INVALID;
 static NameKeyType staticToolTipID = NAMEKEY_INVALID;
 static NameKeyType textEntryPlayerNameID = NAMEKEY_INVALID;
 static NameKeyType textEntryChatID = NAMEKEY_INVALID;
@@ -320,7 +319,7 @@ static GameWindow *buttonClear = nullptr;
 static GameWindow *buttonHost = nullptr;
 static GameWindow *buttonJoin = nullptr;
 static GameWindow *buttonDirectConnect = nullptr;
-static GameWindow *buttonEmote = nullptr;
+static GameWindow *buttonChat = nullptr;
 static GameWindow *staticToolTip = nullptr;
 static GameWindow *textEntryPlayerName = nullptr;
 static GameWindow *textEntryChat = nullptr;
@@ -354,8 +353,7 @@ static void playerTooltip(GameWindow *window,
 		return;
 	}
 
-	// GeneralsX @bugfix BenderAI 12/02/2026 - Cast via uintptr_t for 64-bit compatibility
-	UnsignedInt playerIP = static_cast<UnsignedInt>(reinterpret_cast<uintptr_t>(GadgetListBoxGetItemData( window, row, col )));
+	UnsignedInt playerIP = (UnsignedInt)(uintptr_t)GadgetListBoxGetItemData( window, row, col );
 	LANPlayer *player = TheLAN->LookupPlayer(playerIP);
 	if (!player)
 	{
@@ -384,7 +382,7 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 	buttonHostID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:ButtonHost" );
 	buttonJoinID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:ButtonJoin" );
 	buttonDirectConnectID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:ButtonDirectConnect" );
-	buttonEmoteID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:ButtonEmote" );
+	buttonChatID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:ButtonEmote" ); // TODO Rename ButtonEmote to ButtonChat in .wnd file
 	staticToolTipID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:StaticToolTip" );
 	textEntryPlayerNameID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:TextEntryPlayerName" );
 	textEntryChatID = TheNameKeyGenerator->nameToKey( "LanLobbyMenu.wnd:TextEntryChat" );
@@ -401,7 +399,7 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 	buttonHost = TheWindowManager->winGetWindowFromId( nullptr, buttonHostID );
 	buttonJoin = TheWindowManager->winGetWindowFromId( nullptr, buttonJoinID );
 	buttonDirectConnect = TheWindowManager->winGetWindowFromId( nullptr, buttonDirectConnectID );
-	buttonEmote = TheWindowManager->winGetWindowFromId( nullptr,buttonEmoteID  );
+	buttonChat = TheWindowManager->winGetWindowFromId( nullptr,buttonChatID  );
 	staticToolTip = TheWindowManager->winGetWindowFromId( nullptr, staticToolTipID );
 	textEntryPlayerName = TheWindowManager->winGetWindowFromId( nullptr, textEntryPlayerNameID );
 	textEntryChat = TheWindowManager->winGetWindowFromId( nullptr, textEntryChatID );
@@ -438,7 +436,8 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 	for (EnumeratedIP *candidate = IPlist; candidate != nullptr; candidate = candidate->getNext())
 	{
 		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit enumerated candidate %d.%d.%d.%d\n",
-			PRINTF_IP_AS_4_INTS(candidate->getIP())); */
+			PRINTF_IP_AS_4_INTS(candidate->getIP()));
+		fflush(stderr); */
 		if (candidate->getIP() == IP)
 		{
 			foundPreferredIP = TRUE;
@@ -446,14 +445,16 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 		}
 	}
 	/* 	fprintf(stderr, "[LAN86] LanLobbyMenuInit preferredLANIP=%d.%d.%d.%d globalDefaultIP=%d.%d.%d.%d foundPreferred=%d\n",
-		PRINTF_IP_AS_4_INTS(preferredLANIP), PRINTF_IP_AS_4_INTS(TheGlobalData->m_defaultIP), foundPreferredIP); */
+		PRINTF_IP_AS_4_INTS(preferredLANIP), PRINTF_IP_AS_4_INTS(TheGlobalData->m_defaultIP), foundPreferredIP);
+	fflush(stderr); */
 
 	if (IP != 0 && foundPreferredIP)
 	{
 		IPSource = (preferredLANIP == IP) ? L"Options LAN IP" : L"Global default LAN IP";
 		// GeneralsX @build GitHubCopilot 12/04/2026 Make LAN lobby explicitly honor configured LAN IP preference when it is still valid.
-		DEBUG_LOG(("LanLobbyMenuInit - using preferred LAN IP %d.%d.%d.%d from %ls",
-			PRINTF_IP_AS_4_INTS(IP), IPSource));
+		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit - using preferred LAN IP %d.%d.%d.%d from %ls\n",
+			PRINTF_IP_AS_4_INTS(IP), IPSource);
+		fflush(stderr); */
 	}
 	else
 	{
@@ -472,16 +473,18 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 		IPSource = L"Enumerated LAN IP fallback";
 		IP = IPlist->getIP();
 		// GeneralsX @build GitHubCopilot 11/04/2026 Log auto-selected LAN IP to diagnose cross-platform discovery failures.
-		DEBUG_LOG(("LanLobbyMenuInit - auto-selected LAN IP %d.%d.%d.%d from enumeration",
-			PRINTF_IP_AS_4_INTS(IP)));
-		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit fallback IP %d.%d.%d.%d preferred=%d.%d.%d.%d found=%d\n",
-			PRINTF_IP_AS_4_INTS(IP), PRINTF_IP_AS_4_INTS(preferredLANIP), foundPreferredIP); */
+		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit - auto-selected LAN IP %d.%d.%d.%d from enumeration\n",
+			PRINTF_IP_AS_4_INTS(IP));
+		fprintf(stderr, "[LAN86] LanLobbyMenuInit fallback IP %d.%d.%d.%d preferred=%d.%d.%d.%d found=%d\n",
+			PRINTF_IP_AS_4_INTS(IP), PRINTF_IP_AS_4_INTS(preferredLANIP), foundPreferredIP);
+		fflush(stderr); */
 	}
 
 	if (foundPreferredIP)
 	{
 		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit preferred IP source=%ls ip=%d.%d.%d.%d\n",
-			IPSource, PRINTF_IP_AS_4_INTS(IP)); */
+			IPSource, PRINTF_IP_AS_4_INTS(IP));
+		fflush(stderr); */
 	}
 #if defined(RTS_DEBUG)
 	UnicodeString str;
@@ -492,19 +495,19 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 	// TheLAN->init() sets us to be in a LAN menu screen automatically.
 	TheLAN->init();
 	// GeneralsX @build GitHubCopilot 11/04/2026 Log LAN bind attempt from lobby startup path.
-	DEBUG_LOG(("LanLobbyMenuInit - calling SetLocalIP(%d.%d.%d.%d)", PRINTF_IP_AS_4_INTS(IP)));
-	/* 	fprintf(stderr, "[LAN86] LanLobbyMenuInit SetLocalIP begin %d.%d.%d.%d\n", PRINTF_IP_AS_4_INTS(IP)); */
+	/* 	fprintf(stderr, "[LAN86] LanLobbyMenuInit SetLocalIP begin %d.%d.%d.%d\n", PRINTF_IP_AS_4_INTS(IP));
+	fflush(stderr); */
 	if (TheLAN->SetLocalIP(IP) == FALSE) {
 		LANSocketErrorDetected = TRUE;
 		// GeneralsX @build GitHubCopilot 11/04/2026 Explicit failure breadcrumb for LAN socket initialization.
-		DEBUG_LOG(("LanLobbyMenuInit - SetLocalIP failed for %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(IP)));
-		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit SetLocalIP failed %d.%d.%d.%d\n", PRINTF_IP_AS_4_INTS(IP)); */
+		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit SetLocalIP failed %d.%d.%d.%d\n", PRINTF_IP_AS_4_INTS(IP));
+		fflush(stderr); */
 	}
 	else
 	{
 		// GeneralsX @build GitHubCopilot 11/04/2026 Explicit success breadcrumb for LAN socket initialization.
-		DEBUG_LOG(("LanLobbyMenuInit - SetLocalIP succeeded for %d.%d.%d.%d", PRINTF_IP_AS_4_INTS(IP)));
-		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit SetLocalIP ok %d.%d.%d.%d\n", PRINTF_IP_AS_4_INTS(IP)); */
+		/* 		fprintf(stderr, "[LAN86] LanLobbyMenuInit SetLocalIP ok %d.%d.%d.%d\n", PRINTF_IP_AS_4_INTS(IP));
+		fflush(stderr); */
 	}
 
 	//Initialize the gadgets on the window
@@ -524,8 +527,8 @@ void LanLobbyMenuInit( WindowLayout *layout, void *userData )
 	defaultName.truncateTo(g_lanPlayerNameLength);
 	TheLAN->RequestSetName(defaultName);
 	// GeneralsX @build GitHubCopilot 11/04/2026 Trace initial LAN discovery request from menu bootstrap.
-	DEBUG_LOG(("LanLobbyMenuInit - issuing initial RequestLocations() from LAN lobby"));
-	/* 	fprintf(stderr, "[LAN86] LanLobbyMenuInit RequestLocations initial\n"); */
+	/* 	fprintf(stderr, "[LAN86] LanLobbyMenuInit RequestLocations initial\n");
+	fflush(stderr); */
 	TheLAN->RequestLocations();
 
 	/*
@@ -862,7 +865,7 @@ WindowMsgHandledType LanLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 					}
 
 				}
-				else if ( controlID == buttonEmoteID )
+				else if ( controlID == buttonChatID )
 				{
 					// read the user's input
 					txtInput.set(GadgetTextEntryGetText( textEntryChat ));
@@ -872,8 +875,7 @@ WindowMsgHandledType LanLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 					txtInput.trim();
 					// Echo the user's input to the chat window
 					if (!txtInput.isEmpty()) {
-//						TheLAN->RequestChat(txtInput, LANAPIInterface::LANCHAT_EMOTE);
-						TheLAN->RequestChat(txtInput, LANAPIInterface::LANCHAT_NORMAL);
+						TheLAN->RequestPlayerChat(txtInput);
 					}
 				}
 				else if (controlID == buttonDirectConnectID)
@@ -954,7 +956,9 @@ WindowMsgHandledType LanLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 
 					// Echo the user's input to the chat window
 					if (!txtInput.isEmpty())
-						TheLAN->RequestChat(txtInput, LANAPIInterface::LANCHAT_NORMAL);
+					{
+						TheLAN->RequestPlayerChat(txtInput);
+					}
 
 				}
 				/*

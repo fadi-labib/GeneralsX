@@ -91,20 +91,21 @@
 #include "w3d_file.h"
 #include "assetmgr.h"
 #include "w3derr.h"
-#include "wwdebug.h"
+#include "WWDebug/wwdebug.h"
 #include "vertmaterial.h"
 #include "shader.h"
 #include "matinfo.h"
 #include "htree.h"
 #include "meshbuild.h"
-#include "tri.h"
-#include "aaplane.h"
+#include "WWMath/tri.h"
+#include "WWMath/aaplane.h"
 #include "aabtree.h"
-#include "chunkio.h"
+#include "WWLib/chunkio.h"
 #include "w3d_util.h"
 #include "meshmdl.h"
 #include "meshgeometry.h"
 #include "ww3d.h"
+#include "Renderer.h"
 #include "camera.h"
 #include "texture.h"
 #include "rinfo.h"
@@ -116,9 +117,9 @@
 #include "dx8indexbuffer.h"
 #include "dx8renderer.h"
 #include "visrasterizer.h"
-#include "wwmemlog.h"
+#include "WWDebug/wwmemlog.h"
 #include "dx8rendererdebugger.h"
-#include <wwprofile.h>
+#include <WWDebug/wwprofile.h>
 
 static unsigned MeshDebugIdCount;
 
@@ -855,7 +856,7 @@ void MeshClass::Render_Material_Pass(MaterialPassClass * pass,IndexBufferClass *
 		DX8Wrapper::Set_Index_Buffer(ib,0);
 
 		SNAPSHOT_SAY(("Set_World_Identity"));
-		DX8Wrapper::Set_World_Identity();
+		Renderer::Set_World_Identity();
 
 		DX8PolygonRendererListIterator it(&Model->PolygonRendererList);
 		while (!it.Is_Done()) {
@@ -865,12 +866,14 @@ void MeshClass::Render_Material_Pass(MaterialPassClass * pass,IndexBufferClass *
 		}
 
 		if (oldOpacity >= 0)
-		{	//opacity was modified for this mesh instance, so need to restore the material setting which may be shared
+		{
+			//opacity was modified for this mesh instance, so need to restore the material setting which may be shared
 			//among other instances.
 			pass->Peek_Material()->Set_Opacity(oldOpacity);
 		}
 		if (oldEmissive.X >= 0)
-		{	//emissive was modified for this mesh instance, so need to restore the material setting which may be shared
+		{
+			//emissive was modified for this mesh instance, so need to restore the material setting which may be shared
 			//among other instances.
 			pass->Peek_Material()->Set_Emissive(oldEmissive);
 		}
@@ -945,7 +948,7 @@ void MeshClass::Render_Material_Pass(MaterialPassClass * pass,IndexBufferClass *
 			int vertex_offset = Model->PolygonRendererList.Peek_Head()->Get_Vertex_Offset();
 			pass->Install_Materials();
 
-			DX8Wrapper::Set_Transform(D3DTS_WORLD,Get_Transform());
+			Renderer::Set_Transform(RenderTransform_World,Get_Transform());
 			DX8Wrapper::Set_Index_Buffer(dynamic_ib,vertex_offset);
 
 			DX8Wrapper::Draw_Triangles(
@@ -981,7 +984,7 @@ void MeshClass::Render_Material_Pass(MaterialPassClass * pass,IndexBufferClass *
 		DX8Wrapper::Set_Index_Buffer(ib,0);
 
 		SNAPSHOT_SAY(("Set_World_Transform"));
-		DX8Wrapper::Set_Transform(D3DTS_WORLD,Transform);
+		Renderer::Set_Transform(RenderTransform_World,Transform);
 
 		DX8PolygonRendererListIterator it(&Model->PolygonRendererList);
 		while (!it.Is_Done()) {
@@ -992,12 +995,14 @@ void MeshClass::Render_Material_Pass(MaterialPassClass * pass,IndexBufferClass *
 		}
 
 		if (oldOpacity >= 0)
-		{	//opacity was modified for this mesh instance, so need to restore the material setting which may be shared
+		{
+			//opacity was modified for this mesh instance, so need to restore the material setting which may be shared
 			//among other instances.
 			pass->Peek_Material()->Set_Opacity(oldOpacity);
 		}
 		if (oldEmissive.X >= 0)
-		{	//emissive was modified for this mesh instance, so need to restore the material setting which may be shared
+		{
+			//emissive was modified for this mesh instance, so need to restore the material setting which may be shared
 			//among other instances.
 			pass->Peek_Material()->Set_Emissive(oldEmissive);
 		}

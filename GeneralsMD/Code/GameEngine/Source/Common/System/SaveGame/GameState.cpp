@@ -29,6 +29,7 @@
 
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"
+#include <cstdio>
 #ifndef _WIN32
 #include <filesystem>     // std::filesystem for Linux directory operations
 #include "socket_compat.h" // CreateDirectory stub for Linux
@@ -38,6 +39,8 @@
 #endif
 #include "Common/file.h"
 #include "Common/FileSystem.h"
+#include "Lib/PathUtil.h"
+#include "Common/FramePacer.h"
 #include "Common/GameEngine.h"
 #include "Common/GameState.h"
 #include "Common/GameStateMap.h"
@@ -220,7 +223,8 @@ UnicodeString getUnicodeDateBuffer(SYSTEMTIME timeVal)
 	osvi.dwOSVersionInfoSize=sizeof(OSVERSIONINFO);
 	UnicodeString displayDateBuffer;
 	if (GetVersionEx(&osvi))
-	{	//check if we're running Win9x variant since they may need different characters
+	{
+		//check if we're running Win9x variant since they may need different characters
 		if (osvi.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS)
 		{
 			char dateBuffer[ DATE_BUFFER_SIZE ];
@@ -233,7 +237,7 @@ UnicodeString getUnicodeDateBuffer(SYSTEMTIME timeVal)
 			return displayDateBuffer;
 		}
 	}
-	wchar_t dateBuffer[ DATE_BUFFER_SIZE ];
+	WideChar dateBuffer[ DATE_BUFFER_SIZE ];
 	GetDateFormatW( LOCALE_USER_DEFAULT,
 								 DATE_SHORTDATE,
 								 &timeVal,
@@ -261,7 +265,8 @@ UnicodeString getUnicodeTimeBuffer(SYSTEMTIME timeVal)
 	OSVERSIONINFO	osvi;
 	osvi.dwOSVersionInfoSize=sizeof(OSVERSIONINFO);
 	if (GetVersionEx(&osvi))
-	{	//check if we're running Win9x variant since they may need different characters
+	{
+		//check if we're running Win9x variant since they may need different characters
 		if (osvi.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS)
 		{
 			char timeBuffer[ DATE_BUFFER_SIZE ];
@@ -276,7 +281,7 @@ UnicodeString getUnicodeTimeBuffer(SYSTEMTIME timeVal)
 	}
 	// setup time buffer for local region time format
 	#define TIME_BUFFER_SIZE 256
-	wchar_t timeBuffer[ TIME_BUFFER_SIZE ];
+	WideChar timeBuffer[ TIME_BUFFER_SIZE ];
 	GetTimeFormatW( LOCALE_USER_DEFAULT,
 								 TIME_NOSECONDS,
 								 &timeVal,
@@ -405,6 +410,13 @@ void GameState::addSnapshotBlock( AsciiString blockName, Snapshot *snapshot, Sna
 		DEBUG_CRASH(( "addSnapshotBlock: Invalid parameters" ));
 		return;
 
+	}
+
+	// Snapshots with xfer disabled are not registered, so their blocks are omitted when saving
+	// and are skipped like unknown blocks when loading.
+	if( !snapshot->isXferEnabled() )
+	{
+		return;
 	}
 
 	// add to the list
@@ -556,8 +568,8 @@ AsciiString GameState::findNextSaveFilename( UnicodeString desc )
 /** Save the current state of the engine in a save file
 	* NOTE: filename is a *filename only* */
 // ------------------------------------------------------------------------------------------------
-SaveCode GameState::saveGame( AsciiString filename, UnicodeString desc,
-															SaveFileType saveType, SnapshotType which )
+SaveResult GameState::saveGame( AsciiString filename, UnicodeString desc,
+													SaveFileType saveType, SnapshotType which )
 {
 
 	// if there is no filename, this is a new file being created, find an appropriate filename
@@ -567,7 +579,7 @@ SaveCode GameState::saveGame( AsciiString filename, UnicodeString desc,
 	{
 
 		DEBUG_CRASH(( "GameState::saveGame - Unable to find valid filename for save game" ));
-		return SC_NO_FILE_AVAILABLE;
+		return SaveResult( SC_NO_FILE_AVAILABLE );
 
 	}
 
@@ -585,10 +597,8 @@ SaveCode GameState::saveGame( AsciiString filename, UnicodeString desc,
 	try {
 		xferSave.open( filepath );
 	} catch(...) {
-		// print error message to the user
-		TheInGameUI->message( "GUI:Error" );
 		DEBUG_LOG(( "Error opening file '%s'", filepath.str() ));
-		return SC_ERROR;
+		return SaveResult( SC_UNABLE_TO_OPEN_FILE, filename );
 	}
 
 	// save our save file type
@@ -616,17 +626,9 @@ SaveCode GameState::saveGame( AsciiString filename, UnicodeString desc,
 	catch( ... )
 	{
 
-		UnicodeString ufilepath;
-		ufilepath.translate(filepath);
-
-		UnicodeString msg;
-		msg.format( TheGameText->fetch("GUI:ErrorSavingGame"), ufilepath.str() );
-
-		MessageBoxOk(TheGameText->fetch("GUI:Error"), msg, nullptr);
-
 		// close the file and get out of here
 		xferSave.close();
-		return SC_ERROR;
+		return SaveResult( SC_ERROR, filename );
 
 	}
 
@@ -640,18 +642,14 @@ SaveCode GameState::saveGame( AsciiString filename, UnicodeString desc,
 	MAIN_THREAD_EM_ASM({ if (typeof gxFlushUserData === 'function') gxFlushUserData(); });
 #endif
 
-	// print message to the user for game successfully saved
-	UnicodeString msg = TheGameText->fetch( "GUI:GameSaveComplete" );
-	TheInGameUI->message( msg );
-
-	return SC_OK;
+	return SaveResult( SC_OK, filename );
 
 }
 
 // ------------------------------------------------------------------------------------------------
 /** A mission save */
 // ------------------------------------------------------------------------------------------------
-SaveCode GameState::missionSave()
+SaveResult GameState::missionSave()
 {
 
 	// get campaign
@@ -694,8 +692,7 @@ SaveCode GameState::loadGame( AvailableGameInfo gameInfo )
 	//
 	TheGameStateMap->clearScratchPadMaps();
 
-	// construct path to file
-	AsciiString filepath = getFilePathInSaveDirectory(gameInfo.filename);
+	AsciiString filepath = getSaveGamePathForRead(gameInfo.filename);
 
 	// open the save file
 	XferLoad xferLoad;
@@ -739,6 +736,22 @@ SaveCode GameState::loadGame( AvailableGameInfo gameInfo )
 		error = TRUE;
 	}
 
+	// GeneralsX @bugfix Moortu 02/11/2026 Re-evaluate the logic time scale after the engine reset (#334)
+	// TheGameEngine->reset() runs ScriptEngine::reset(), which restores the global render FPS limit
+	// (for example 30 -> 60) but leaves the logic time scale flag untouched. A Skirmish started with the
+	// game speed slider at the tick rate (30) has the scale disabled (30 < 30 is false), so after an
+	// in-game load the logic ran once per render frame at 60 FPS: double speed. Loading from the main
+	// menu was fine because clearGameData() re-evaluates the flag when leaving the previous game.
+	if (TheFramePacer != nullptr)
+	{
+		const Int tickRate = TheFramePacer->getLogicTimeScaleFps();
+		const Int maxFPS = TheFramePacer->getFramesPerSecondLimit();
+		TheFramePacer->enableLogicTimeScale(tickRate < maxFPS);
+		fprintf(stderr, "[SAVELOAD] Logic time scale re-evaluated after load: tick=%d Hz, render cap=%d FPS, scale=%s\n",
+			tickRate, maxFPS, (tickRate < maxFPS) ? "on" : "off");
+		fflush(stderr);
+	}
+
 	// check for error
 	if( error == TRUE )
 	{
@@ -746,15 +759,6 @@ SaveCode GameState::loadGame( AvailableGameInfo gameInfo )
 		if (TheGameLogic->isInGame())
 			TheGameLogic->clearGameData( FALSE );
 		TheGameEngine->reset();
-
-		// print error message to the user
-		UnicodeString ufilepath;
-		ufilepath.translate(filepath);
-
-		UnicodeString msg;
-		msg.format( TheGameText->fetch("GUI:ErrorLoadingGame"), ufilepath.str() );
-
-		MessageBoxOk(TheGameText->fetch("GUI:Error"), msg, nullptr);
 
 		return SC_INVALID_DATA;	// you can't use a naked "throw" outside of a catch statement!
 
@@ -788,6 +792,72 @@ SaveCode GameState::loadGame( AvailableGameInfo gameInfo )
 }
 
 //-------------------------------------------------------------------------------------------------
+static void showQueuedSaveGameLoadFailure( void )
+{
+	UnicodeString title = TheGameText->FETCH_OR_SUBSTITUTE("GUI:SaveGameLoadFailedTitle", L"CANNOT LOAD SAVE");
+	UnicodeString body = TheGameText->FETCH_OR_SUBSTITUTE("GUI:SaveGameLoadFailed", L"The saved game file could not be opened or is invalid.");
+
+	MessageBoxOk(title, body, nullptr);
+}
+
+// ------------------------------------------------------------------------------------------------
+/** Load the save game requested on startup, after the shell has been initialized */
+// ------------------------------------------------------------------------------------------------
+// GeneralsX @feature bobtista 28/08/2026 Import queued save loading and release-visible failure diagnostics.
+// Upstream PR: https://github.com/TheSuperHackers/GeneralsGameCode/pull/3001
+void GameState::loadQueuedSaveGame()
+{
+	AvailableGameInfo gameInfo;
+	gameInfo.filename = TheGlobalData->m_loadSaveGame;
+	gameInfo.next = nullptr;
+	gameInfo.prev = nullptr;
+
+	TheWritableGlobalData->m_loadSaveGame.clear();
+
+	if( gameInfo.filename.endsWithNoCase( SAVE_GAME_EXTENSION ) == FALSE )
+	{
+		DEBUG_LOG(("Save game '%s' is not a save game file", gameInfo.filename.str()));
+		showQueuedSaveGameLoadFailure();
+		return;
+	}
+
+	// getSaveGameInfoFromFile throws when the file is missing, so check before reading it
+	if( doesSaveGameExist( gameInfo.filename ) == FALSE )
+	{
+		std::fprintf(stderr, "Save game '%s' was not found\n", gameInfo.filename.str());
+		std::fflush(stderr);
+		showQueuedSaveGameLoadFailure();
+		return;
+	}
+
+	// getSaveGameInfoFromFile throws on a malformed file instead of returning a SaveCode
+	try
+	{
+		getSaveGameInfoFromFile( gameInfo.filename, &gameInfo.saveGameInfo );
+	}
+	catch( ... )
+	{
+		std::fprintf(stderr, "Save game '%s' could not be read\n", gameInfo.filename.str());
+		std::fflush(stderr);
+		showQueuedSaveGameLoadFailure();
+		return;
+	}
+
+	// this hides the shell, keeping the menu screens on the stack for when the game ends
+	TheGameLogic->prepareNewGame( GAME_SINGLE_PLAYER, DIFFICULTY_NORMAL, 0 );
+
+	if( loadGame( gameInfo ) != SC_OK )
+	{
+		std::fprintf(stderr, "Failed to load save game '%s'\n", gameInfo.filename.str());
+		std::fflush(stderr);
+		if( TheGameLogic->isInGame() )
+			TheGameLogic->clearGameData( FALSE );
+		TheGameEngine->reset();
+		TheGameEngine->setQuitting( TRUE );
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
 AsciiString GameState::getSaveDirectory() const
 {
 	AsciiString tmp = TheGlobalData->getPath_UserData();
@@ -809,6 +879,17 @@ AsciiString GameState::getFilePathInSaveDirectory(const AsciiString& leaf) const
 }
 
 //-------------------------------------------------------------------------------------------------
+AsciiString GameState::getSaveGamePathForRead(const AsciiString& filenameOrPath) const
+{
+	if (isAbsolutePath(filenameOrPath.str()))
+	{
+		return filenameOrPath;
+	}
+
+	return getFilePathInSaveDirectory(filenameOrPath);
+}
+
+//-------------------------------------------------------------------------------------------------
 Bool GameState::isInSaveDirectory(const AsciiString& path) const
 {
 	return FileSystem::isPathInDirectory(path, getSaveDirectory());
@@ -817,13 +898,7 @@ Bool GameState::isInSaveDirectory(const AsciiString& path) const
 // ------------------------------------------------------------------------------------------------
 AsciiString GameState::getMapLeafName(const AsciiString& in) const
 {
-	const char* pBackslash = strrchr(in.str(), '\\');
-	const char* pSlash = strrchr(in.str(), '/');
-	const char* p = pBackslash;
-	if (p == nullptr || (pSlash != nullptr && pSlash > p))
-	{
-		p = pSlash;
-	}
+	const char* p = getLastPathSeparator(in.str());
 	if (p)
 	{
 		//
@@ -847,7 +922,7 @@ static const char* findLastPathSeparatorInRangeInclusive(const char* start, cons
 {
 	while (end >= start)
 	{
-		if (*end == '\\' || *end == '/')
+		if (isPathSeparator(*end))
 			return end;
 		--end;
 	}
@@ -880,7 +955,7 @@ static AsciiString getMapLeafAndDirName(const AsciiString& in)
 	}
 	else
 	{
-		DEBUG_CRASH(("Illegal map-dir-name... should have at least one backslash"));
+		DEBUG_CRASH(("Illegal map-dir-name... should have at least one path separator"));
 		return in;
 	}
 }
@@ -917,7 +992,10 @@ AsciiString GameState::realMapPathToPortableMapPath(const AsciiString& in) const
 		prefix = in;
 	}
 	prefix.toLower();
-	return prefix;
+	// GeneralsX @bugfix felipebraz 07/11/2026 Canonical portable network format uses backslashes for cross-platform LAN CRC match.
+	std::string portableStr = prefix.str();
+	normalizePathSeparatorsToPortable(portableStr);
+	return AsciiString(portableStr.c_str());
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -937,7 +1015,7 @@ AsciiString GameState::portableMapPathToRealMapPath(const AsciiString& in) const
 	{
 		// the map dir DOES NOT end with "\\", must add it
 		prefix = TheMapCache->getMapDir();
-		prefix.concat("\\");
+		prefix.concat(getNativePathSeparator());
 		containingBasePath = prefix;
 		prefix.concat(getMapLeafAndDirName(in));
 	}
@@ -945,7 +1023,7 @@ AsciiString GameState::portableMapPathToRealMapPath(const AsciiString& in) const
 	{
 		// the map dir DOES NOT end with "\\", must add it
 		prefix = TheMapCache->getUserMapDir();
-		prefix.concat("\\");
+		prefix.concat(getNativePathSeparator());
 		containingBasePath = prefix;
 		prefix.concat(getMapLeafAndDirName(in));
 	}
@@ -961,7 +1039,10 @@ AsciiString GameState::portableMapPathToRealMapPath(const AsciiString& in) const
 		DEBUG_LOG(("Normalized file path for '%s' was outside the expected base path of '%s'.", prefix.str(), containingBasePath.str()));
 		return AsciiString::TheEmptyString;
 	}
-	// GeneralsX @bugfix Copilot 02/04/2026 Preserve path casing on macOS/Linux to avoid load failures on case-sensitive filesystems.
+	// GeneralsX @bugfix felipebraz 07/11/2026 Normalize path separators to host platform format via PathUtil.
+	std::string normalizedStr = prefix.str();
+	normalizePathSeparatorsToNative(normalizedStr, containingBasePath.getLength());
+	prefix = normalizedStr.c_str();
 #ifdef _WIN32
 	prefix.toLower();
 #endif
@@ -974,8 +1055,7 @@ AsciiString GameState::portableMapPathToRealMapPath(const AsciiString& in) const
 Bool GameState::doesSaveGameExist( AsciiString filename )
 {
 
-	// construct full path to file
-	AsciiString filepath = getFilePathInSaveDirectory(filename);
+	AsciiString filepath = getSaveGamePathForRead(filename);
 
 	// open file
 	XferLoad xfer;
@@ -1018,6 +1098,8 @@ void GameState::getSaveGameInfoFromFile( AsciiString filename, SaveGameInfo *sav
 		return;
 
 	}
+
+	filename = getSaveGamePathForRead( filename );
 
 	// open file for partial loading
 	XferLoad xferLoad;
@@ -1254,9 +1336,21 @@ void GameState::populateSaveGameListbox( GameWindow *listbox, SaveLoadLayoutType
 		if( saveGameInfo->saveFileType == SAVE_FILE_TYPE_MISSION )
 			color = GameMakeColor( 200, 255, 200, 255 );
 		else if( count & 0x1 )
+		{
+#if RTS_GENERALS
+			color = GameMakeColor( 255, 128, 0, 255 );
+#else
 			color = GameMakeColor( 255, 255, 255, 255 );
+#endif
+		}
 		else
+		{
+#if RTS_GENERALS
+			color = GameMakeColor( 255, 192, 0, 255 );
+#else
 			color = GameMakeColor( 170, 170, 235, 255 );
+#endif
+		}
 
 		// add string to listbox
 		index = GadgetListBoxAddEntryText( listbox, displayLabel, color, -1, 0 );
@@ -1705,14 +1799,7 @@ void GameState::xfer( Xfer *xfer )
 	// if no label was found, we'll use the map name (just filename, no directory info)
 	if (exists == FALSE || saveGameInfo->mapLabel == AsciiString::TheEmptyString)
 	{
-		const char* p = TheGlobalData->m_mapName.reverseFind('\\');
-		if (p == nullptr)
-			saveGameInfo->mapLabel = TheGlobalData->m_mapName;
-		else
-		{
-			p++;  // skip the '\' we're on
-			saveGameInfo->mapLabel.set(p);
-		}
+		saveGameInfo->mapLabel = getFileName(TheGlobalData->m_mapName.str());
 	}
 
 	// xfer map label

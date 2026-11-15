@@ -73,26 +73,27 @@
 
 #include "ringobj.h"
 #include "w3d_util.h"
-#include "wwdebug.h"
+#include "WWDebug/wwdebug.h"
 #include "vertmaterial.h"
 #include "ww3d.h"
-#include "chunkio.h"
+#include "WWLib/chunkio.h"
 #include "rinfo.h"
 #include "coltest.h"
 #include "inttest.h"
-#include	"matrix3.h"
-#include	"wwmath.h"
+#include	"WWMath/matrix3.h"
+#include	"WWMath/wwmath.h"
 #include "assetmgr.h"
-#include "wwstring.h"
-#include "bound.h"
+#include "WWLib/wwstring.h"
+#include "WWLib/bound.h"
 #include "camera.h"
 #include "statistics.h"
 #include "predlod.h"
 #include "dx8wrapper.h"
+#include "Renderer.h"
 #include "dx8indexbuffer.h"
 #include "dx8vertexbuffer.h"
 #include "sortingrenderer.h"
-#include "Vector3i.h"
+#include "WWMath/Vector3i.h"
 #include "visrasterizer.h"
 
 
@@ -690,8 +691,6 @@ void RingRenderObjClass::Render(RenderInfoClass & rinfo)
 		// Process texture reductions:
 //		if (RingTexture) RingTexture->Process_Reduction();
 
-		Matrix3D temp = Transform;
-
 		// Do Time Based Animation
 		animate ();
 
@@ -722,9 +721,9 @@ void RingRenderObjClass::Render(RenderInfoClass & rinfo)
 
 			Matrix3D temp;
 			temp.Look_At(obj_position, obj_position + camera_z_vector, 0.0f);
-			DX8Wrapper::Set_Transform(D3DTS_WORLD, temp);
+			Renderer::Set_Transform(RenderTransform_World, temp);
 		} else {
-			DX8Wrapper::Set_Transform(D3DTS_WORLD, Transform);
+			Renderer::Set_Transform(RenderTransform_World, Transform);
 		}
 
 		//
@@ -1223,12 +1222,7 @@ RingPrototypeClass::RingPrototypeClass(RingRenderObjClass *ring)
 	//
 	if (ring->RingTexture != nullptr) {
 		StringClass name = ring->RingTexture->Get_Full_Path();
-		const char *filename = ::strrchr (name, '\\');
-		if (filename != nullptr) {
-			filename ++;
-		} else {
-			filename = name;
-		}
+		const char *filename = getFileName (name.str());
 
 		strlcpy(Definition.TextureName, filename, ARRAY_SIZE(Definition.TextureName));
 	}
@@ -1538,8 +1532,8 @@ void RingMeshClass::Generate(float radius, int slices)
 
 	for (index = 0; index < Vertex_ct; index += 2) {
 
-		float x_pos = -WWMath::Sin (angle);
-		float y_pos = WWMath::Cos (angle);
+		float x_pos = -WWMath::Sinf_Legacy (angle);
+		float y_pos = WWMath::Cosf_Legacy (angle);
 
 		//
 		//	Place the inner index

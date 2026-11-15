@@ -47,14 +47,13 @@
 //-----------------------------------------------------------------------------
 //           Includes
 //-----------------------------------------------------------------------------
-#include "always.h"
-#include "rendobj.h"
-#include "w3d_file.h"
-#include "dx8vertexbuffer.h"
-#include "dx8indexbuffer.h"
-#include "shader.h"
-#include "vertmaterial.h"
-#include "Lib/BaseType.h"
+#include "WWLib/always.h"
+#include "WW3D2/rendobj.h"
+#include "WW3D2/w3d_file.h"
+#include "WW3D2/dx8vertexbuffer.h"
+#include "WW3D2/dx8indexbuffer.h"
+#include "WW3D2/shader.h"
+#include "WW3D2/vertmaterial.h"
 #include "Common/GameType.h"
 #include "Common/Dict.h"
 #include "Common/AsciiString.h"
@@ -156,6 +155,9 @@ public:
 	void clearAllBridges();
 	/// Draws the bridges.  Uses camera for culling.
 	void drawBridges(CameraClass * camera, Bool wireframe, TextureClass *cloudTexture);
+	// GeneralsX @feature Olcay Seygan / Ilyas Akin 08/10/2026 Draws the decks for shadow map casting
+	/// Draws the decks into whatever depth target is bound, for shadow casting.
+	void drawBridgeShadowCasters(void);
 	/// Called when the view changes, and sort key needs to be recalculated.
 	/// Normally sortKey gets calculated when a bridge becomes visible.
 	void doFullUpdate() {m_updateVis = true;};

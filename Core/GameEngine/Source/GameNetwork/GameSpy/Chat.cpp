@@ -74,6 +74,7 @@ static const FieldParse GameSpyColorFieldParse[] =
 	{ nullptr,					nullptr,						nullptr,						0 }
 
 };
+static_assert(ARRAY_SIZE(GameSpyColorFieldParse) == GSCOLOR_MAX + 1, "Incorrect array size");
 
 void INI::parseOnlineChatColorDefinition( INI* ini )
 {
@@ -82,7 +83,7 @@ void INI::parseOnlineChatColorDefinition( INI* ini )
 }
 
 
-Color GameSpyColor[GSCOLOR_MAX] =
+Color GameSpyColor[] =
 {
 	GameMakeColor(255,255,255,255),	// GSCOLOR_DEFAULT
 	GameMakeColor(255,255,  0,255),	// GSCOLOR_CURRENTROOM
@@ -120,6 +121,7 @@ Color GameSpyColor[GSCOLOR_MAX] =
 	GameMakeColor(255,255,255,255),	// GSCOLOR_MOTD,
 	GameMakeColor(255,255,  0,255),	// GSCOLOR_MOTD_HEADING,
 };
+static_assert(ARRAY_SIZE(GameSpyColor) == GSCOLOR_MAX, "Incorrect array size");
 
 Bool GameSpyInfo::sendChat( UnicodeString message, Bool isAction, GameWindow *playerListbox )
 {
@@ -137,7 +139,8 @@ Bool GameSpyInfo::sendChat( UnicodeString message, Bool isAction, GameWindow *pl
 	if (!message.isEmpty())
 	{
 		if (!playerListbox)
-		{	// Public message
+		{
+			// Public message
 			if( isAction  ||  message.compare(s_prevMsg) != 0 )  //don't send duplicate messages
 			{
 				req.message.isAction = isAction;
@@ -154,7 +157,8 @@ Bool GameSpyInfo::sendChat( UnicodeString message, Bool isAction, GameWindow *pl
 		GadgetListBoxGetSelected(playerListbox, (Int *)&selections);
 
 		if (selections[0] == -1)
-		{	// Public message
+		{
+			// Public message
 			if( isAction  ||  message.compare(s_prevMsg) != 0 )  //don't send duplicate messages
 			{
 				req.message.isAction = isAction;

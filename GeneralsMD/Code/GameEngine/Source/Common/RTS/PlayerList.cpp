@@ -58,8 +58,8 @@
 #include "GameLogic/Object.h"
 #endif
 #include "GameLogic/SidesList.h"
-#include "GameNetwork/NetworkDefs.h"
 #include "GameNetwork/GameInfo.h"
+#include "GameNetwork/NetworkDefs.h"
 #include <algorithm>
 
 //-----------------------------------------------------------------------------
@@ -244,7 +244,10 @@ void PlayerList::newGame()
 	}
 
 	// GeneralsX @bugfix felipebraz 05/07/2026 Pre-compute the network slot to player mapping
-	resolveSlotIndices();
+	if (TheGameInfo)
+	{
+		assignSlotIndices(*TheGameInfo);
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -256,7 +259,8 @@ void PlayerList::init()
 	for (int i = 1; i < MAX_PLAYER_COUNT; i++)
 		m_players[i]->init(nullptr);
 
-	std::fill(m_slotIndices, m_slotIndices + MAX_PLAYER_COUNT, -1);
+	std::fill(m_slotIndices, m_slotIndices + ARRAY_SIZE(m_slotIndices), -1);
+	std::fill(m_slotToPlayerIndices, m_slotToPlayerIndices + ARRAY_SIZE(m_slotToPlayerIndices), -1);
 
 	// call setLocalPlayer so that becomingLocalPlayer() gets called appropriately
 	setLocalPlayer(m_players[0]);
@@ -309,11 +313,7 @@ Team *PlayerList::validateTeam( AsciiString owner )
 {
 	// owner could be a player or team. first, check team names.
 	Team *t = TheTeamFactory->findTeam(owner);
-	if (t)
-	{
-		//DEBUG_LOG(("assigned obj %08lx to team %s",obj,owner.str()));
-	}
-	else
+	if (!t)
 	{
 		DEBUG_CRASH(("no team or player named %s could be found!", owner.str()));
 		t = getNeutralPlayer()->getDefaultTeam();
@@ -403,7 +403,6 @@ Player *PlayerList::getEachPlayerFromMask( PlayerMaskType& maskToAdjust )
 	maskToAdjust = 0;
 	return nullptr; // mask not found
 }
-
 
 //-------------------------------------------------------------------------------------------------
 PlayerMaskType PlayerList::getPlayersWithRelationship( Int srcPlayerIndex, UnsignedInt allowedRelationships )
@@ -504,16 +503,27 @@ void PlayerList::loadPostProcess()
 }
 
 //-----------------------------------------------------------------------------
-void PlayerList::setSlotIndex(Int playerIndex, Byte slotIndex)
+void PlayerList::setSlotIndex(Int playerIndex, Int slotIndex)
 {
 	if (playerIndex >= 0 && playerIndex < ARRAY_SIZE(m_slotIndices))
 	{
+		const Int oldSlotIndex = m_slotIndices[playerIndex];
+		if (oldSlotIndex >= 0 && oldSlotIndex < ARRAY_SIZE(m_slotToPlayerIndices))
+		{
+			m_slotToPlayerIndices[oldSlotIndex] = -1;
+		}
+
 		m_slotIndices[playerIndex] = slotIndex;
+
+		if (slotIndex >= 0 && slotIndex < ARRAY_SIZE(m_slotToPlayerIndices))
+		{
+			m_slotToPlayerIndices[slotIndex] = playerIndex;
+		}
 	}
 }
 
 //-----------------------------------------------------------------------------
-Byte PlayerList::getSlotIndex(Int playerIndex) const
+Int PlayerList::getSlotIndex(Int playerIndex) const
 {
 	if (playerIndex >= 0 && playerIndex < ARRAY_SIZE(m_slotIndices))
 	{
@@ -524,26 +534,44 @@ Byte PlayerList::getSlotIndex(Int playerIndex) const
 }
 
 //-----------------------------------------------------------------------------
-void PlayerList::resolveSlotIndices()
+Int PlayerList::getPlayerIndexFromSlotIndex(Int slotIndex) const
 {
-	if (!TheGameInfo)
-		return;
+	if (slotIndex >= 0 && slotIndex < ARRAY_SIZE(m_slotToPlayerIndices))
+	{
+		return m_slotToPlayerIndices[slotIndex];
+	}
 
+	return -1;
+}
+
+//-----------------------------------------------------------------------------
+Player *PlayerList::getPlayerFromSlotIndex(Int slotIndex) const
+{
+	const Int playerIndex = getPlayerIndexFromSlotIndex(slotIndex);
+	if (playerIndex >= 0 && playerIndex < m_playerCount)
+	{
+		return m_players[playerIndex];
+	}
+
+	return nullptr;
+}
+
+//-----------------------------------------------------------------------------
+void PlayerList::assignSlotIndices(const GameInfo& gameInfo)
+{
 	AsciiString playerName;
 
 	for (Int i = 0; i < MAX_SLOTS; ++i)
 	{
-		const GameSlot* slot = TheGameInfo->getSlot(i);
+		const GameSlot* slot = gameInfo.getConstSlot(i);
 		if (!slot || !slot->isOccupied())
 			continue;
 
 		playerName.format("player%d", i);
 
-		Player* player = findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(playerName));
-		if (player)
+		if (Player* player = findPlayerWithNameKey(TheNameKeyGenerator->nameToKey(playerName)))
 		{
 			setSlotIndex(player->getPlayerIndex(), i);
 		}
 	}
 }
-

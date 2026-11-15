@@ -322,6 +322,10 @@ public:
 
 	virtual void doFXObj(const Object* primary, const Object* /*secondary*/) const override
 	{
+		// GeneralsX @feature fbraz3 08/10/2026 Explosion dynamic light toggle via INI/Options
+		if (TheGlobalData && !TheGlobalData->isExplosionDynamicLights())
+			return;
+
 		if (primary)
 		{
 			Real radius = m_radius;
@@ -339,6 +343,10 @@ public:
 
 	virtual void doFXPos(const Coord3D *primary, const Matrix3D* /*primaryMtx*/, const Real /*primarySpeed*/, const Coord3D * /*secondary*/, const Real /*overrideRadius*/ ) const override
 	{
+		// GeneralsX @feature fbraz3 08/10/2026 Explosion dynamic light toggle via INI/Options
+		if (TheGlobalData && !TheGlobalData->isExplosionDynamicLights())
+			return;
+
 		if (primary)
 		{
 			TheDisplay->createLightPulse(primary, &m_color, 1, m_radius, m_increaseFrames, m_decreaseFrames);
@@ -614,6 +622,7 @@ protected:
 
 					newPos.x = primary->x + offset.x + radius * cos(angle);
 					newPos.y = primary->y + offset.y + radius * sin(angle);
+					newPos.z = primary->z + offset.z;
 					if( m_createAtGroundHeight && TheTerrainLogic )
 					{
 						//old way:
@@ -624,7 +633,7 @@ protected:
 						newPos.z = TheTerrainLogic->getLayerHeight( newPos.x, newPos.y, layer );
 					}
 					else
-						newPos.z = primary->z + offset.z + m_height.getValue();
+						newPos.z += m_height.getValue();
 
 
 					if (m_orientToObject && mtx)
@@ -867,6 +876,25 @@ const FXList *FXListStore::findFXList(const char* name) const
 {
 	// read the FXList name
 	const char *c = ini->getNextToken();
+
+	// GeneralsX @bugfix fbraz3 31/10/2026 Never allocate new NameKeys from optional visual override FXListGeneralsX.ini
+	if (ini->getFilename().endsWithNoCase("FXListGeneralsX.ini"))
+	{
+		for (FXListMap::iterator it = TheFXListStore->m_fxmap.begin(); it != TheFXListStore->m_fxmap.end(); ++it)
+		{
+			if (strcmp(TheNameKeyGenerator->keyToName(it->first).str(), c) == 0)
+			{
+				FXList& fxl = it->second;
+				fxl.clear();
+				ini->initFromINI(&fxl, TheFXListFieldParse);
+				return;
+			}
+		}
+		FXList ignoredFX;
+		ini->initFromINI(&ignoredFX, TheFXListFieldParse);
+		return;
+	}
+
 	NameKeyType key = TheNameKeyGenerator->nameToKey(c);
 	FXList& fxl = TheFXListStore->m_fxmap[key];
 	fxl.clear();

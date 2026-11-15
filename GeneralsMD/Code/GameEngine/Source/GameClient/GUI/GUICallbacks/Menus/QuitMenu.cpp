@@ -38,6 +38,9 @@
 #include "Common/PlayerList.h"
 #include "Common/RandomValue.h"
 #include "Common/Recorder.h"
+#include "Common/PlayerTemplate.h"
+#include "GameClient/CampaignManager.h"
+#include "GameClient/ChallengeGenerals.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/WindowLayout.h"
 #include "GameClient/GameWindowManager.h"
@@ -78,6 +81,8 @@ static NameKeyType buttonRestart = NAMEKEY_INVALID;
 static NameKeyType buttonReturn = NAMEKEY_INVALID;
 static NameKeyType buttonOptions = NAMEKEY_INVALID;
 static NameKeyType buttonSaveLoad = NAMEKEY_INVALID;
+
+extern SkirmishGameInfo *TheChallengeGameInfo;
 
 static void initGadgetsFullQuit()
 {
@@ -175,7 +180,7 @@ static void restartMissionMenu()
 	// destroy the quit menu
 	destroyQuitMenu();
 
-	Int gameMode = TheGameLogic->getGameMode();
+	GameMode gameMode = TheGameLogic->getGameMode();
 	AsciiString mapName = TheGlobalData->m_mapName;
 
 	// TheSuperHackers @bugfix Caball009 07/02/2026 Reuse the previous seed value for the new skirmish match to prevent mismatches.
@@ -204,6 +209,27 @@ static void restartMissionMenu()
 	TheGameLogic->clearGameData(FALSE);
 	TheGameEngine->setQuitting(FALSE);
 
+	// GeneralsX @bugfix fbraz3 02/11/2026 Re-initialize TheChallengeGameInfo on mission restart in General's Challenge (#328, #390)
+	if (TheCampaignManager && TheCampaignManager->getCurrentCampaign() && TheCampaignManager->getCurrentCampaign()->isChallengeCampaign())
+	{
+		if (!TheChallengeGameInfo)
+		{
+			TheChallengeGameInfo = NEW SkirmishGameInfo;
+		}
+		TheChallengeGameInfo->init();
+		TheChallengeGameInfo->clearSlotList();
+		TheChallengeGameInfo->reset();
+		TheChallengeGameInfo->enterGame();
+		TheChallengeGameInfo->setMap(mapName);
+
+		Int templateNum = TheChallengeGenerals ? TheChallengeGenerals->getCurrentPlayerTemplateNum() : 0;
+		const PlayerTemplate *playerTemplate = ThePlayerTemplateStore->getNthPlayerTemplate(templateNum);
+		GameSlot slot;
+		slot.setState(SLOT_PLAYER, playerTemplate ? playerTemplate->getDisplayName() : UnicodeString::TheEmptyString);
+		slot.setPlayerTemplate(templateNum);
+		TheChallengeGameInfo->setSlot(0, slot);
+	}
+
 	if (replayFile.isNotEmpty())
 	{
 		TheRecorder->playbackFile(replayFile);
@@ -213,11 +239,11 @@ static void restartMissionMenu()
 		// send a message to the logic for a new game
 		TheWritableGlobalData->m_pendingFile = mapName;
 		GameMessage *msg = TheMessageStream->appendMessage( GameMessage::MSG_NEW_GAME );
-		msg->appendIntegerArgument(gameMode);
+		msg->appendIntegerArgument((Int)gameMode);
 		msg->appendIntegerArgument(diff);
 		msg->appendIntegerArgument(rankPointsStartedWith);
 		msg->appendIntegerArgument(fps);
-		DEBUG_LOG(("Restarting game mode %d, Diff=%d, RankPoints=%d", gameMode,
+		DEBUG_LOG(("Restarting game mode %d, Diff=%d, RankPoints=%d", (Int)gameMode,
 																																		TheScriptEngine->getGlobalDifficulty(),
 																																		rankPointsStartedWith)
 							);
@@ -256,13 +282,13 @@ void HideQuitMenu()
 
 Bool canOpenQuitMenu()
 {
-	return (TheGameEngine != nullptr && TheGameEngine->isActive() 
-		&& TheGameLogic != nullptr
-		&& (!TheInGameUI || !TheInGameUI->isQuitMenuVisible()) 
-		&& !TheGameLogic->isLoadingMap() 
-		&& !TheGameLogic->isLoadingSave() 
-		&& !TheGameLogic->isIntroMoviePlaying() 
-		&& (TheScriptEngine == nullptr || !TheScriptEngine->isGameEnding()));
+	return (TheGameEngine != nullptr && TheGameEngine->isActive() &&
+		TheGameLogic != nullptr &&
+		(!TheInGameUI || !TheInGameUI->isQuitMenuVisible()) &&
+		!TheGameLogic->isLoadingMap() &&
+		!TheGameLogic->isLoadingSave() &&
+		!TheGameLogic->isIntroMoviePlaying() &&
+		(TheScriptEngine == nullptr || !TheScriptEngine->isGameEnding()));
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -291,7 +317,7 @@ void ToggleQuitMenu()
 	// BGC- this is kind of hackish, but its the safest way to do it I think.
 	// Basically we're seeing if either the save/load window or the options window is up
 	// and if one of them is, we quit out of them rather than toggle the quit menu.
-	if (TheShell->getOptionsLayout(FALSE) != FALSE) {
+	if (TheShell->getOptionsLayout(FALSE) != nullptr) {
 		WindowLayout *optLayout = TheShell->getOptionsLayout(FALSE);
 		GameWindow *optionsParent = optLayout->getFirstWindow();
 		DEBUG_ASSERTCRASH(optionsParent != nullptr, ("Not able to get the options layout parent window"));

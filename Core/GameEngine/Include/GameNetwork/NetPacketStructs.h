@@ -19,6 +19,7 @@
 #pragma once
 
 #include "GameNetwork/NetworkDefs.h"
+#include "Utility/stringex.h"
 
 class AsciiString;
 class UnicodeString;

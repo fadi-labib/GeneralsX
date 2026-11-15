@@ -24,8 +24,6 @@
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
-#define WIN32_LEAN_AND_MEAN  // only bare bones windows stuff wanted
-
 #include "Common/crc.h"
 #include "Common/GameState.h"
 #include "Common/Registry.h"
@@ -38,10 +36,7 @@
 #include "Common/UserPreferences.h"
 #include "GameLogic/GameLogic.h"
 
-#ifndef _WIN32
-#include <ifaddrs.h>
-#include <net/if.h>
-#endif
+#include "GameNetwork/LANInterfaceDevice.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -63,77 +58,7 @@ static const UnsignedShort lobbyPort = 8086; ///< This is the UDP port used by a
 
 AsciiString GetMessageTypeString(UnsignedInt type);
 
-#ifndef _WIN32
-// GeneralsX @feature GitHubCopilot 12/04/2026 Discover per-interface IPv4 subnet broadcast addresses for LAN discovery on POSIX.
-static Int GatherSubnetBroadcastAddrs(UnsignedInt localIP, UnsignedInt *outAddrs, Int maxAddrs)
-{
-	if (outAddrs == nullptr || maxAddrs <= 0)
-	{
-		return 0;
-	}
 
-	Int count = 0;
-	struct ifaddrs *ifaddr = nullptr;
-	if (getifaddrs(&ifaddr) != 0)
-	{
-		return 0;
-	}
-
-	for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next)
-	{
-		if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET)
-		{
-			continue;
-		}
-		if ((ifa->ifa_flags & IFF_UP) == 0 || (ifa->ifa_flags & IFF_LOOPBACK) != 0)
-		{
-			continue;
-		}
-
-		const sockaddr_in *addr = reinterpret_cast<const sockaddr_in *>(ifa->ifa_addr);
-		const UnsignedInt hostAddr = ntohl(addr->sin_addr.s_addr);
-		if (localIP != 0 && hostAddr != localIP)
-		{
-			continue;
-		}
-
-		UnsignedInt bcast = 0;
-		if (ifa->ifa_broadaddr != nullptr && ifa->ifa_broadaddr->sa_family == AF_INET)
-		{
-			const sockaddr_in *baddr = reinterpret_cast<const sockaddr_in *>(ifa->ifa_broadaddr);
-			bcast = ntohl(baddr->sin_addr.s_addr);
-		}
-		else if (ifa->ifa_netmask != nullptr && ifa->ifa_netmask->sa_family == AF_INET)
-		{
-			const sockaddr_in *nmask = reinterpret_cast<const sockaddr_in *>(ifa->ifa_netmask);
-			const UnsignedInt mask = ntohl(nmask->sin_addr.s_addr);
-			bcast = (hostAddr & mask) | (~mask);
-		}
-		else
-		{
-			continue;
-		}
-
-		Bool duplicate = FALSE;
-		for (Int i = 0; i < count; ++i)
-		{
-			if (outAddrs[i] == bcast)
-			{
-				duplicate = TRUE;
-				break;
-			}
-		}
-
-		if (!duplicate && count < maxAddrs)
-		{
-			outAddrs[count++] = bcast;
-		}
-	}
-
-	freeifaddrs(ifaddr);
-	return count;
-}
-#endif
 
 const UnsignedInt LANAPI::s_resendDelta = 10 * 1000;	///< This is how often we announce ourselves to the world
 /*
@@ -192,7 +117,12 @@ void LANAPI::init()
 	m_gameStartTime = 0;
 	m_gameStartSeconds = 0;
 	m_transport->reset();
+#ifdef _WIN32
 	m_transport->init(m_localIP, lobbyPort);
+#else
+	// GeneralsX @feature Mr. Meesseeks 11/07/2026 Bind to INADDR_ANY on POSIX to reliably receive broadcasts across interfaces.
+	m_transport->init(INADDR_ANY, lobbyPort);
+#endif
 	m_transport->allowBroadcasts(true);
 
 	m_pendingAction = ACT_NONE;
@@ -279,6 +209,7 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 		Bool queued = m_transport->queueSend(ip, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
 		DEBUG_LOG(("LANAPI::sendMessage - direct type=%s dst=%d.%d.%d.%d:%d queued=%d",
 			GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(ip), lobbyPort, queued));
+		(void)queued;
 		/* 		fprintf(stderr, "[LAN86] send direct type=%u dst=%d.%d.%d.%d:%d queued=%d\n",
 			msg->messageType, PRINTF_IP_AS_4_INTS(ip), lobbyPort, queued); */
 	}
@@ -307,10 +238,10 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 					// GeneralsX @build GitHubCopilot 11/04/2026 Instrument direct-connect fan-out sends.
 					Bool queued = m_transport->queueSend(slot->getIP(), lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
 					sentAny = TRUE;
-					DEBUG_LOG(("LANAPI::sendMessage - direct-connect type=%s dst=%d.%d.%d.%d:%d queued=%d",
-						GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(slot->getIP()), lobbyPort, queued));
-					/* 					fprintf(stderr, "[LAN86] send directed-fanout type=%u dst=%d.%d.%d.%d:%d queued=%d inLobby=%d directGame=%d\n",
-						msg->messageType, PRINTF_IP_AS_4_INTS(slot->getIP()), lobbyPort, queued); */
+					(void)queued;
+					/* 					fprintf(stderr, "[LAN86] send directed-fanout type=%s dst=%d.%d.%d.%d:%d queued=%d\n",
+						GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(slot->getIP()), lobbyPort, queued);
+					fflush(stderr); */
 				}
 			}
 		}
@@ -318,40 +249,46 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 		if (!sentAny)
 		{
 			Bool queued = m_transport->queueSend(m_broadcastAddr, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
-			DEBUG_LOG(("LANAPI::sendMessage - directed-fanout fallback broadcast type=%s dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d",
-				GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort,
-				PRINTF_IP_AS_4_INTS(m_localIP), queued));
-			/* 			fprintf(stderr, "[LAN86] send directed-fanout-fallback-broadcast type=%u dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d\n",
-				msg->messageType, PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort, PRINTF_IP_AS_4_INTS(m_localIP), queued); */
+			(void)queued;
+			/* 			fprintf(stderr, "[LAN86] send directed-fanout-fallback-broadcast type=%s dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d\n",
+				GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort, PRINTF_IP_AS_4_INTS(m_localIP), queued);
+			fflush(stderr); */
 		}
 	}
 	else
 	{
 		// GeneralsX @feature GitHubCopilot 12/04/2026 Send discovery/control broadcast packets to interface subnet broadcast addresses before global broadcast.
+		// GeneralsX @bugfix Mr. Meesseeks 29/09/2026 Fan out discovery broadcasts (locations/announcements) to ALL active subnets
+		// so games can be discovered regardless of which interface (Ethernet or Wi-Fi) is selected.
+		UnsignedInt broadcastFilterIP = m_localIP;
+		if (msg != nullptr && (
+			msg->messageType == LANMessage::MSG_REQUEST_LOCATIONS
+			|| msg->messageType == LANMessage::MSG_GAME_ANNOUNCE
+			|| msg->messageType == LANMessage::MSG_LOBBY_ANNOUNCE))
+		{
+			broadcastFilterIP = 0; // Gather broadcast addrs for all active subnets
+		}
+
 		Bool sentAny = FALSE;
-#ifndef _WIN32
 		UnsignedInt subnetBroadcasts[8];
-		Int subnetCount = GatherSubnetBroadcastAddrs(m_localIP, subnetBroadcasts, ARRAY_SIZE(subnetBroadcasts));
+		Int subnetCount = LANInterfaceDevice::getSubnetBroadcastAddresses(broadcastFilterIP, subnetBroadcasts, ARRAY_SIZE(subnetBroadcasts));
 		for (Int i = 0; i < subnetCount; ++i)
 		{
 			UnsignedInt dst = subnetBroadcasts[i];
 			Bool queued = m_transport->queueSend(dst, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
 			sentAny = TRUE;
-			DEBUG_LOG(("LANAPI::sendMessage - subnet-broadcast type=%s dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d",
-				GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(dst), lobbyPort,
-				PRINTF_IP_AS_4_INTS(m_localIP), queued));
-			/* 			fprintf(stderr, "[LAN86] send subnet-broadcast type=%u dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d\n",
-				msg->messageType, PRINTF_IP_AS_4_INTS(dst), lobbyPort, PRINTF_IP_AS_4_INTS(m_localIP), queued); */
+			(void)queued;
+			/* 			fprintf(stderr, "[LAN86] send subnet-broadcast type=%s dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d\n",
+				GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(dst), lobbyPort, PRINTF_IP_AS_4_INTS(m_localIP), queued);
+			fflush(stderr); */
 		}
-#endif
 		if (!sentAny)
 		{
 			Bool queued = m_transport->queueSend(m_broadcastAddr, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
-			DEBUG_LOG(("LANAPI::sendMessage - broadcast type=%s dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d",
-				GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort,
-				PRINTF_IP_AS_4_INTS(m_localIP), queued));
-			/* 			fprintf(stderr, "[LAN86] send broadcast type=%u dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d\n",
-				msg->messageType, PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort, PRINTF_IP_AS_4_INTS(m_localIP), queued); */
+			(void)queued;
+			/* 			fprintf(stderr, "[LAN86] send broadcast type=%s dst=%d.%d.%d.%d:%d local=%d.%d.%d.%d queued=%d\n",
+				GetMessageTypeString(msg->messageType).str(), PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort, PRINTF_IP_AS_4_INTS(m_localIP), queued);
+			fflush(stderr); */
 		}
 	}
 }
@@ -503,30 +440,36 @@ void LANAPI::update()
 		if (m_isInLANMenu == TRUE) {
 			LANSocketErrorDetected = TRUE;
 			/* 			fprintf(stderr, "[LAN86] LANAPI::update transport update failed while in LAN menu local=%d.%d.%d.%d\n",
-				PRINTF_IP_AS_4_INTS(m_localIP)); */
+				PRINTF_IP_AS_4_INTS(m_localIP));
+			fflush(stderr); */
 		}
 	}
 
 	// Handle any new messages
-	int i;
-	for (i=0; i<MAX_MESSAGES && !LANbuttonPushed; ++i)
+	for (size_t i = 0; i < ARRAY_SIZE(m_transport->m_inBuffer) && !LANbuttonPushed; ++i)
 	{
 		if (m_transport->m_inBuffer[i].length > 0)
 		{
 			// Process the new message
 			UnsignedInt senderIP = m_transport->m_inBuffer[i].addr;
-			if (senderIP == m_localIP)
+			// GeneralsX @bugfix Mr. Meesseeks 29/09/2026 Ignore self-echo from any active local interface on multi-homed hosts
+			// (prevents creating duplicate local ghost players and 'Duplicate name already in game' errors).
+			if (senderIP == m_localIP || LANInterfaceDevice::isLocalHostAddress(senderIP))
 			{
-				/* 				fprintf(stderr, "[LAN86] recv self-echo type=%u from %d.%d.%d.%d ignored\n",
-					((LANMessage *)(m_transport->m_inBuffer[i].data))->messageType, PRINTF_IP_AS_4_INTS(senderIP)); */
+				/* 				fprintf(stderr, "[LAN86] recv self-echo type=%u (%s) from %d.%d.%d.%d ignored\n",
+					((LANMessage *)(m_transport->m_inBuffer[i].data))->messageType,
+					GetMessageTypeString(((LANMessage *)(m_transport->m_inBuffer[i].data))->messageType).str(),
+					PRINTF_IP_AS_4_INTS(senderIP));
+				fflush(stderr); */
 				m_transport->m_inBuffer[i].length = 0;
 				continue;
 			}
 
 			LANMessage *msg = (LANMessage *)(m_transport->m_inBuffer[i].data);
-			/* 			fprintf(stderr, "[LAN86] recv type=%u len=%d from %d.%d.%d.%d local=%d.%d.%d.%d\n",
-				msg->messageType, m_transport->m_inBuffer[i].length,
-				PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(m_localIP)); */
+			/* 			fprintf(stderr, "[LAN86] recv type=%s (%u) len=%d from %d.%d.%d.%d local=%d.%d.%d.%d\n",
+				GetMessageTypeString(msg->messageType).str(), msg->messageType, m_transport->m_inBuffer[i].length,
+				PRINTF_IP_AS_4_INTS(senderIP), PRINTF_IP_AS_4_INTS(m_localIP));
+			fflush(stderr); */
 			//DEBUG_LOG(("LAN message type %s from %ls (%s@%s)", GetMessageTypeString(msg->messageType).str(),
 			//	msg->name, msg->userName, msg->hostName));
 			switch (msg->messageType)
@@ -605,6 +548,10 @@ void LANAPI::update()
 
 			// Mark it as read
 			m_transport->m_inBuffer[i].length = 0;
+		}
+		else
+		{
+			break;
 		}
 	}
 	if(LANbuttonPushed)
@@ -805,10 +752,9 @@ void LANAPI::RequestLocations()
 	msg.messageType = LANMessage::MSG_REQUEST_LOCATIONS;
 	fillInLANMessage( &msg );
 	// GeneralsX @build GitHubCopilot 11/04/2026 Trace LAN discovery probes emitted by this client.
-	DEBUG_LOG(("LANAPI::RequestLocations - local=%d.%d.%d.%d broadcast=%d.%d.%d.%d port=%d",
-		PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort));
 	/* 	fprintf(stderr, "[LAN86] RequestLocations local=%d.%d.%d.%d broadcast=%d.%d.%d.%d port=%d\n",
-		PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort); */
+		PRINTF_IP_AS_4_INTS(m_localIP), PRINTF_IP_AS_4_INTS(m_broadcastAddr), lobbyPort);
+	fflush(stderr); */
 	sendMessage(&msg);
 }
 
@@ -889,11 +835,12 @@ void LANAPI::RequestGameLeave()
 	sendMessage(&msg);
 	m_transport->update();  // Send immediately, before OnPlayerLeave below resets everything.
 
-	if (m_currentGame && m_currentGame->getIP(0) == m_localIP)
+	if (AmIHost())
 	{
 		// Exit out immediately if we're hosting
 		OnPlayerLeave(m_name);
 		removeGame(m_currentGame);
+		delete m_currentGame;
 		m_currentGame = nullptr;
 		m_inLobby = true;
 	}
@@ -909,13 +856,18 @@ void LANAPI::RequestGameAnnounce()
 	// In game - are we a game host?
 	if (m_currentGame && !(m_currentGame->getIsDirectConnect()))
 	{
-		if (m_currentGame->getIP(0) == m_localIP || (m_currentGame->isGameInProgress() && TheNetwork && TheNetwork->isPacketRouter())) // if we're in game we should reply if we're the packet router
+		if (AmIHost() || (m_currentGame->isGameInProgress() && TheNetwork && TheNetwork->isPacketRouter())) // if we're in game we should reply if we're the packet router
 		{
+			AsciiString gameOpts = GameInfoToAsciiString(m_currentGame);
+			if (gameOpts.isEmpty())
+			{
+				return;
+			}
+
 			LANMessage reply;
 			fillInLANMessage( &reply );
 			reply.messageType = LANMessage::MSG_GAME_ANNOUNCE;
 
-			AsciiString gameOpts = GameInfoToAsciiString(m_currentGame);
 			strlcpy(reply.GameInfo.options,gameOpts.str(), ARRAY_SIZE(reply.GameInfo.options));
 			// GeneralsX @bugfix BenderAI 13/02/2026 Use CopyWcharToWindowsWideChar (fighter19 pattern)
 			CopyWcharToWindowsWideChar(reply.GameInfo.gameName, m_currentGame->getName().str(), ARRAY_SIZE(reply.GameInfo.gameName) - 1);
@@ -1001,7 +953,7 @@ void LANAPI::RequestChat( UnicodeString message, ChatType format )
 
 void LANAPI::RequestGameStart()
 {
-	if (m_inLobby || !m_currentGame || m_currentGame->getIP(0) != m_localIP)
+	if (m_inLobby || !AmIHost())
 		return;
 
 	LANMessage msg;
@@ -1021,7 +973,7 @@ void LANAPI::ResetGameStartTimer()
 
 void LANAPI::RequestGameStartTimer( Int seconds )
 {
-	if (m_inLobby || !m_currentGame || m_currentGame->getIP(0) != m_localIP)
+	if (m_inLobby || !AmIHost())
 		return;
 
 	UnsignedInt now = timeGetTime();
@@ -1040,10 +992,12 @@ void LANAPI::RequestGameStartTimer( Int seconds )
 
 void LANAPI::RequestGameOptions( AsciiString gameOptions, Bool isPublic, UnsignedInt ip /* = 0 */ )
 {
-	DEBUG_ASSERTCRASH(gameOptions.getLength() < m_lanMaxOptionsLength, ("Game options string is too long!"));
+	DEBUG_ASSERTCRASH(gameOptions.getLength() <= m_lanMaxOptionsLength, ("Game options string is too long!"));
 
-	if (!m_currentGame)
+	if (!m_currentGame || gameOptions.isEmpty())
+	{
 		return;
+	}
 
 	LANMessage msg;
 	fillInLANMessage( &msg );
@@ -1484,18 +1438,21 @@ Bool LANAPI::SetLocalIP( UnsignedInt localIP )
 	UnsignedInt oldIP = m_localIP;
 	m_localIP = localIP;
 	// GeneralsX @build GitHubCopilot 11/04/2026 Trace LAN socket rebind lifecycle for issue #86 diagnostics.
-	DEBUG_LOG(("LANAPI::SetLocalIP - rebinding LAN transport from %d.%d.%d.%d to %d.%d.%d.%d:%d",
-		PRINTF_IP_AS_4_INTS(oldIP), PRINTF_IP_AS_4_INTS(m_localIP), lobbyPort));
 	/* 	fprintf(stderr, "[LAN86] SetLocalIP rebind from %d.%d.%d.%d to %d.%d.%d.%d:%d\n",
-		PRINTF_IP_AS_4_INTS(oldIP), PRINTF_IP_AS_4_INTS(m_localIP), lobbyPort); */
+		PRINTF_IP_AS_4_INTS(oldIP), PRINTF_IP_AS_4_INTS(m_localIP), lobbyPort);
+	fflush(stderr); */
 
 	m_transport->reset();
+#ifdef _WIN32
 	retval = m_transport->init(m_localIP, lobbyPort);
-	Bool broadcastsEnabled = m_transport->allowBroadcasts(true);
-	DEBUG_LOG(("LANAPI::SetLocalIP - init=%d allowBroadcasts=%d local=%d.%d.%d.%d:%d",
-		retval, broadcastsEnabled, PRINTF_IP_AS_4_INTS(m_localIP), lobbyPort));
+#else
+	// GeneralsX @feature Mr. Meesseeks 11/07/2026 Bind to INADDR_ANY on POSIX to reliably receive broadcasts across interfaces.
+	retval = m_transport->init(INADDR_ANY, lobbyPort);
+#endif
+	m_transport->allowBroadcasts(true);
 	/* 	fprintf(stderr, "[LAN86] SetLocalIP result init=%d allowBroadcasts=%d local=%d.%d.%d.%d:%d\n",
-		retval, broadcastsEnabled, PRINTF_IP_AS_4_INTS(m_localIP), lobbyPort); */
+		retval, broadcastsEnabled, PRINTF_IP_AS_4_INTS(m_localIP), lobbyPort);
+	fflush(stderr); */
 
 	return retval;
 }
@@ -1506,9 +1463,10 @@ void LANAPI::SetLocalIP( AsciiString localIP )
 	SetLocalIP(resolvedIP);
 }
 
+// GeneralsX @bugfix Mr. Meesseeks 29/09/2026 Recognize local host if slot 0 IP matches either m_localIP or any local interface.
 Bool LANAPI::AmIHost()
 {
-	return m_currentGame && m_currentGame->getIP(0) == m_localIP;
+	return m_currentGame && (m_currentGame->getIP(0) == m_localIP || LANInterfaceDevice::isLocalHostAddress(m_currentGame->getIP(0)));
 }
 
 void LANAPI::setIsActive(Bool isActive) {
