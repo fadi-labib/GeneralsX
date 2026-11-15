@@ -280,6 +280,12 @@ bool W3DPostProcess::beginScene()
 	if (!TheGlobalData || !TheGlobalData->isEnablePostProcessing())
 		return false;
 
+	// GeneralsX @bugfix dx8wasm - without the copy shader the offscreen scene can never be drawn back
+	// to the back buffer, so redirecting into it leaves a black frame. A device without D3D8 pixel
+	// shaders (the WebGL backend refuses CreatePixelShader) renders straight to the back buffer.
+	if (m_psCopy == 0)
+		return false;
+
 	if (!TheDisplay || !TheDisplay->getFirstView())
 		return false;
 
