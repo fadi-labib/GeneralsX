@@ -605,6 +605,13 @@ void GameClient::update()
 				TheShell->showShellMap(TRUE);
 				TheShell->showShell();
 			}
+			else
+			{
+				// Intro::doPostIntro set m_breakTheMovie, and W3DDisplay::draw renders nothing while it
+				// is set. MainMenu's init clears it on the shell path; with the shell skipped, clear it
+				// here or the match runs behind a black screen.
+				TheWritableGlobalData->m_breakTheMovie = FALSE;
+			}
 
 			if (TheGlobalData->m_loadSaveGame.isNotEmpty())
 			{
