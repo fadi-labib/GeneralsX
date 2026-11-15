@@ -1160,6 +1160,9 @@ if(SAGE_USE_NGMP)
         Source/GameNetwork/GeneralsOnline/NetworkMesh.cpp
         Source/GameNetwork/GeneralsOnline/NextGenTransport.cpp
     )
+else()
+    # GeneralsX @build dx8wasm - the online menus still reference NGMP; see NGMP_Disabled.cpp.
+    list(APPEND GAMEENGINE_SRC Source/GameNetwork/GeneralsOnline/NGMP_Disabled.cpp)
 endif()
 
 add_library(z_gameengine STATIC)
