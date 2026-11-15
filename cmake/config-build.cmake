@@ -150,7 +150,9 @@ if(SAGE_UPDATE_CHECK)
 endif()
 
 # GeneralsX @feature GeneralsOnline NGMP protocol option
-if(IS_VS6_BUILD)
+# GeneralsX @build dx8wasm - off in the browser: NGMP needs libcurl and native sockets, and the web
+# build has its own WebRTC lobby (generals-dx8wasm web-mp/).
+if(IS_VS6_BUILD OR EMSCRIPTEN)
     option(SAGE_USE_NGMP "Use NGMP (GeneralsOnline) multiplayer protocol" OFF)
 else()
     option(SAGE_USE_NGMP "Use NGMP (GeneralsOnline) multiplayer protocol" ON)
