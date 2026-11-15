@@ -25,27 +25,39 @@
 #include "GameClient/GameWindowManager.h"
 
 
-Intro::Intro()
-	: m_currentState(IntroState_Start)
-	, m_allowedStateFlags(0)
-	, m_waitUntilMs(0)
+// GeneralsX @bugfix dx8wasm - which intro states may run, read from the CURRENT global flags.
+// The Intro is constructed in GameClient::init, but GameEngine::init turns m_playIntro and
+// m_playSizzle off later for a -file launch (and the web build's -skirmishonly). Fixed at
+// construction, the Intro still queued the EA logo movie, which never ends on the web build, so it
+// never reached Done and GameClient drew nothing but the intro: a black screen over a running match.
+UnsignedInt Intro::allowedStates()
 {
+	UnsignedInt flags = 0;
 	if (TheGlobalData->m_playIntro)
 	{
-		m_allowedStateFlags |= 1u << IntroState_EALogoMovie;
+		flags |= 1u << IntroState_EALogoMovie;
 	}
 
 	if (TheGlobalData->m_playSizzle)
 	{
 		if (TheGlobalData->m_playIntro)
-			m_allowedStateFlags |= 1u << IntroState_SizzleMovieWait;
+			flags |= 1u << IntroState_SizzleMovieWait;
 
-		m_allowedStateFlags |= 1u << IntroState_SizzleMovie;
+		flags |= 1u << IntroState_SizzleMovie;
 	}
+	return flags;
+}
+
+Intro::Intro()
+	: m_currentState(IntroState_Start)
+	, m_allowedStateFlags(allowedStates())
+	, m_waitUntilMs(0)
+{
 }
 
 void Intro::enterNextState()
 {
+	m_allowedStateFlags = allowedStates();
 	Int currentState = m_currentState;
 	while (currentState < IntroState_Done)
 	{

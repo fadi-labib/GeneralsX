@@ -41,6 +41,7 @@ public:
 private:
 
 	void enterNextState();
+	static UnsignedInt allowedStates();	///< from the current m_playIntro / m_playSizzle
 
 	void doEALogoMovie();
 	void doSizzleMovie();
