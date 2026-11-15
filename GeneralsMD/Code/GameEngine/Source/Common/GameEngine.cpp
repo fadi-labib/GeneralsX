@@ -894,12 +894,10 @@ void GameEngine::init()
 				TheWritableGlobalData->m_playIntro = FALSE;
 
 #ifdef __EMSCRIPTEN__
-				// Skip the logo/sizzle movie + "after intro" shell path entirely; on
-				// wasm the Bink stub never finishes, which parks GameClient::update in
-				// the movie branch (line "if(m_playIntro||m_afterIntro){DRAW;return;}")
-				// so the in-game world is never drawn. Go straight to gameplay.
+				// Skip the logo and sizzle movies entirely. With both off, the Intro state machine
+				// (upstream #2267) has nothing to play and reaches Done on its first update, so
+				// GameClient stops routing through its intro branch and the world is drawn.
 				TheWritableGlobalData->m_playSizzle = FALSE;
-				TheWritableGlobalData->m_afterIntro = FALSE;
 
 				// GeneralsX @build dx8wasm - `-campaign` runs the map as a SINGLE-PLAYER
 				// mission (its own scripts, objectives and scripted opponents) rather than
