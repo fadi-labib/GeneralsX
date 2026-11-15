@@ -15,6 +15,15 @@ if(TARGET gamemath)
     set_target_properties(gamemath PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
+# GeneralsX @build dx8wasm - WebAssembly has no floating-point exception flags, so Emscripten's
+# fenv.h defines FE_ALL_EXCEPT as 0 and none of the individual flags. GameMath only raises, tests
+# and clears them (never computes with them); as 0 those calls are no-ops and every result is
+# unchanged, which is exactly the behaviour of the hardware they describe.
+if(EMSCRIPTEN AND TARGET gamemath)
+    target_compile_definitions(gamemath PRIVATE
+        FE_INVALID=0 FE_DIVBYZERO=0 FE_OVERFLOW=0 FE_UNDERFLOW=0 FE_INEXACT=0)
+endif()
+
 # Ensure GameMath includes are available to ALL targets
 # to prevent one-definition-rule violations and ensure USE_DETERMINISTIC_MATH activates consistently.
 include_directories(${gamemath_SOURCE_DIR}/include)
