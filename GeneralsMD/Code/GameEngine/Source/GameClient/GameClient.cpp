@@ -596,8 +596,15 @@ void GameClient::update()
 			delete m_intro;
 			m_intro = nullptr;
 
-			TheShell->showShellMap(TRUE);
-			TheShell->showShell();
+			// GeneralsX @bugfix dx8wasm - a -file launch goes straight into its map; showing the shell
+			// here would push the main menu over the running match (black backdrop, since the shell
+			// map is off for -file). Before the Intro refactor this was the m_initialFile guard on
+			// m_afterIntro in GameEngine.cpp.
+			if (TheGlobalData->m_initialFile.isEmpty())
+			{
+				TheShell->showShellMap(TRUE);
+				TheShell->showShell();
+			}
 
 			if (TheGlobalData->m_loadSaveGame.isNotEmpty())
 			{
