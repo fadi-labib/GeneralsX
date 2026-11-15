@@ -795,7 +795,6 @@ Int parseSkirmishOnly(char *args[], int num)
 	// immediately instead of after a stall.
 	TheWritableGlobalData->m_playIntro = FALSE;
 	TheWritableGlobalData->m_playSizzle = FALSE;
-	TheWritableGlobalData->m_afterIntro = TRUE;
 	return 1;
 }
 

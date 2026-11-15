@@ -4,7 +4,13 @@
 #ifndef NGMP_WEBSOCKET_H
 #define NGMP_WEBSOCKET_H
 
+#if defined(SAGE_USE_NGMP)
 #include <curl/curl.h>
+#else
+// GeneralsX @build dx8wasm - this header is included by always-built menus, but only NGMP builds
+// link curl. Without it the member below is never touched; this is curl's own definition of CURL.
+typedef void CURL;
+#endif
 
 #pragma push_macro("min")
 #pragma push_macro("max")
