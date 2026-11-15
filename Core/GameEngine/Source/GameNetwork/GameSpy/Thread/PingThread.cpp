@@ -331,7 +331,7 @@ void PingThreadClass::Thread_Function()
 	}
 
 	WSACleanup();
-#if defined(_UNIX) && !defined(__APPLE__)
+#if defined(_UNIX) && !defined(__APPLE__) && !defined(__EMSCRIPTEN__)  // glibc thread-cancel unwind; libc++ has none
 	} catch ( abi::__forced_unwind& ) {
 		throw;
 #endif

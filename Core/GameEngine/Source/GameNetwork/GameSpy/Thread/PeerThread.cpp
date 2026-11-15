@@ -1806,7 +1806,7 @@ void PeerThreadClass::Thread_Function()
 	DEBUG_LOG(("voluntarily ending peer thread %d", running));
 	peerShutdown( peer );
 
-#if defined(_UNIX) && !defined(__APPLE__)
+#if defined(_UNIX) && !defined(__APPLE__) && !defined(__EMSCRIPTEN__)  // glibc thread-cancel unwind; libc++ has none
 	} catch ( abi::__forced_unwind& ) {
 		throw;
 #endif
