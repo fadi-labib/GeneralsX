@@ -30,7 +30,7 @@
 
 // GeneralsX @build BenderAI 12/02/2026 Cross-platform executable path retrieval
 #ifndef _WIN32
-#ifdef __linux__
+#if defined(__linux__) || defined(__EMSCRIPTEN__)
 #include <unistd.h>  // readlink
 #include <limits.h>  // PATH_MAX
 #elif defined(__APPLE__)
@@ -155,7 +155,7 @@ int ReplaySimulation::simulateReplaysInWorkerProcesses(const std::vector<AsciiSt
 	GetModuleFileNameW(nullptr, exePath, ARRAY_SIZE(exePath));
 #else
 	char exePathNarrow[1024];
-#ifdef __linux__
+#if defined(__linux__) || defined(__EMSCRIPTEN__)
 	ssize_t len = readlink("/proc/self/exe", exePathNarrow, sizeof(exePathNarrow) - 1);
 	if (len != -1) {
 		exePathNarrow[len] = '\0';

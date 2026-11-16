@@ -1398,7 +1398,7 @@ UnsignedInt GlobalData::generateExeCRC()
 	exeCRC.set(GENERALSMD_104_CD_EXE_CRC);
 	DEBUG_LOG(("Fake EXE CRC is 0x%8.8X", exeCRC.get()));
 
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__EMSCRIPTEN__)
 	// GeneralsX @bugfix BenderAI 18/02/2026
 	// On Linux, reading the entire 180MB+ binary for CRC is prohibitively slow
 	// and unnecessary. Instead, use version-based CRC which is fast and sufficient.

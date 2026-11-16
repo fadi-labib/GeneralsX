@@ -14,7 +14,7 @@ namespace NGMP {
 #ifndef NGMP_CLIENT_ID
 #if defined(__APPLE__)
 #define NGMP_CLIENT_ID "generalsx_macos"
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__EMSCRIPTEN__)
 #define NGMP_CLIENT_ID "generalsx_linux"
 #elif defined(_WIN32)
 #define NGMP_CLIENT_ID "generalsx_windows"
