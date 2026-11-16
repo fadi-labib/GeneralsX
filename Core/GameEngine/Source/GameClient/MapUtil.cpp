@@ -30,6 +30,12 @@
 // INCLUDES ///////////////////////////////////////////////////////////////////////////////////////
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 #include <cstdint>
+#include <set>
+
+#if !defined(_WIN32)
+#include <filesystem>
+static std::set<std::string> s_failedMapLookups;
+#endif
 
 #include "Common/crc.h"
 #include "Common/FileSystem.h"
@@ -66,36 +72,6 @@
 //-------------------------------------------------------------------------------
 // PRIVATE DATA ///////////////////////////////////////////////////////////////////////////////////
 static const char *mapExtension = ".map";
-
-// GeneralsX @bugfix Copilot 27/04/2026 Accept both '\' and '/' separators so user custom maps work on macOS/Linux paths.
-static const char *findLastPathSeparator(const AsciiString& path)
-{
-	const char *backslash = path.reverseFind('\\');
-	const char *slash = path.reverseFind('/');
-
-	if (!backslash)
-	{
-		return slash;
-	}
-
-	if (!slash)
-	{
-		return backslash;
-	}
-
-	return slash > backslash ? slash : backslash;
-}
-
-static Bool hasValidMapLeafLayout(const AsciiString& filepathLower, const AsciiString& filenameLower)
-{
-	AsciiString endingStrBackslash;
-	endingStrBackslash.format("%s\\%s%s", filenameLower.str(), filenameLower.str(), mapExtension);
-
-	AsciiString endingStrSlash;
-	endingStrSlash.format("%s/%s%s", filenameLower.str(), filenameLower.str(), mapExtension);
-
-	return filepathLower.endsWithNoCase(endingStrBackslash.str()) || filepathLower.endsWithNoCase(endingStrSlash.str());
-}
 
 static Int m_width = 0;						///< Height map width.
 static Int m_height = 0;					///< Height map height (y size of array).
@@ -480,6 +456,29 @@ void MapCache::updateCache()
 		m_doLoadStandardMapCacheINI = TRUE;
 	}
 
+#if !defined(_WIN32)
+	s_failedMapLookups.clear();
+	// GeneralsX @feature fbraz3 03/09/2026 Check user Documents directory for Zero Hour custom maps
+	// On macOS/Linux, also scan user Documents directory if it exists and differs from userMapDir
+	const char* homeDir = getenv("HOME");
+	if (homeDir)
+	{
+		std::vector<std::string> docMapDirs = {
+			std::string(homeDir) + "/Documents/Command and Conquer Generals Zero Hour Data/Maps",
+			std::string(homeDir) + "/Documents/Command & Conquer Generals Zero Hour Data/Maps"
+		};
+		for (const auto& dmd : docMapDirs)
+		{
+			std::error_code ec;
+			if (std::filesystem::exists(dmd, ec) && std::filesystem::is_directory(dmd, ec))
+			{
+				AsciiString docMaps(dmd.c_str());
+				loadMapsFromDisk(docMaps, FALSE);
+			}
+		}
+	}
+#endif
+
 	// Load standard maps from map cache last.
 	// This overwrites matching user maps to prevent munkees getting rowdy :)
 	if (m_doLoadStandardMapCacheINI)
@@ -548,7 +547,7 @@ Bool MapCache::loadMapsFromDisk( const AsciiString &mapDir, Bool isOfficial, Boo
 	FilenameList filepathList;
 	FilenameListIter filepathIt;
 	AsciiString toplevelPattern;
-	toplevelPattern.format("%s\\", mapDir.str());
+	toplevelPattern.format("%s%c", mapDir.str(), getNativePathSeparator());
 	Bool mapListChanged = FALSE;
 	AsciiString filenamepattern;
 	filenamepattern.format("*.%s", getMapExtension().str());
@@ -563,10 +562,10 @@ Bool MapCache::loadMapsFromDisk( const AsciiString &mapDir, Bool isOfficial, Boo
 		AsciiString filepathLower = *filepathIt;
 		filepathLower.toLower();
 
-		const char *szFilenameLower = findLastPathSeparator(filepathLower);
+		const char *szFilenameLower = getLastPathSeparator(filepathLower.str());
 		if (!szFilenameLower)
 		{
-			DEBUG_CRASH(("Couldn't find path separator in map name!"));
+			DEBUG_CRASH(("Couldn't find / or \\ in map name!"));
 			continue;
 		}
 
@@ -579,7 +578,11 @@ Bool MapCache::loadMapsFromDisk( const AsciiString &mapDir, Bool isOfficial, Boo
 			continue;
 		}
 
-		if (!hasValidMapLeafLayout(filepathLower, filenameLower))
+		// The map must sit in a folder of the same name
+		const AsciiString fullMapFolderLower(filepathLower.str(), szFilenameLower - filepathLower.str());
+		const char* lastMapFolderLower = getFileName(fullMapFolderLower.str());
+
+		if (strcmp(lastMapFolderLower, filenameLower.str()) != 0)
 		{
 			DEBUG_CRASH(("Found map '%s' in wrong spot (%s)", filenameLower.str(), filepathLower.str()));
 			continue;
@@ -622,8 +625,7 @@ Bool MapCache::addMap(
 			{
 				// unofficial maps or maps without names
 				AsciiString tempdisplayname;
-				const char *displayNameStart = findLastPathSeparator(fname);
-				tempdisplayname = displayNameStart ? displayNameStart + 1 : fname;
+				tempdisplayname = getFileName(fname.str());
 				(*this)[lowerFname].m_displayName.translate(tempdisplayname);
 				if (md.m_numPlayers >= 2)
 				{
@@ -653,9 +655,6 @@ Bool MapCache::addMap(
 		DEBUG_LOG(("size: %d / %d", fileInfo.sizeLow, md.m_filesize));
 		DEBUG_LOG(("time1: %d / %d", fileInfo.timestampHigh, md.m_timestamp.m_highTimeStamp));
 		DEBUG_LOG(("time2: %d / %d", fileInfo.timestampLow, md.m_timestamp.m_lowTimeStamp));
-//		DEBUG_LOG(("size: %d / %d", filesize, md.m_filesize));
-//		DEBUG_LOG(("time1: %d / %d", timestamp.m_highTimeStamp, md.m_timestamp.m_highTimeStamp));
-//		DEBUG_LOG(("time2: %d / %d", timestamp.m_lowTimeStamp, md.m_timestamp.m_lowTimeStamp));
 	}
 
 	DEBUG_LOG(("MapCache::addMap(): caching '%s' because '%s' was not found", fname.str(), lowerFname.str()));
@@ -685,8 +684,7 @@ Bool MapCache::addMap(
 	{
 		DEBUG_LOG(("Missing TheKey_mapName!"));
 		AsciiString tempdisplayname;
-		const char *displayNameStart = findLastPathSeparator(fname);
-		tempdisplayname = displayNameStart ? displayNameStart + 1 : fname;
+		tempdisplayname = getFileName(fname.str());
 		md.m_displayName.translate(tempdisplayname);
 		if (md.m_numPlayers >= 2)
 		{
@@ -700,7 +698,7 @@ Bool MapCache::addMap(
 	{
 		AsciiString stringFileName = fname;
 		stringFileName.truncateBy(4);
-		const char *stringFileSeparator = findLastPathSeparator(stringFileName);
+		const char *stringFileSeparator = getLastPathSeparator(stringFileName.str());
 		if (stringFileSeparator && *stringFileSeparator == '/')
 		{
 			stringFileName.concat("/map.str");
@@ -886,10 +884,20 @@ static Bool addMapToMapListbox(
 			GadgetListBoxSetItemData( lbData.listbox, reinterpret_cast<void*>(std::uintptr_t(imageItemData)), index, 1 );
 		}
 
-		// TheSuperHackers @performance Now stops processing when the list is full.
-		if (index == lbData.numLength - 1)
+		// GeneralsX @bugfix UnicodeApocalypse 10/09/2026 Grow the listbox instead of truncating the custom map list when it fills up.
+		// >= instead of == guards against future refactors that add entries in batches or non-sequential order.
+		if (index >= lbData.numLength - 1)
 		{
-			return false;
+			const Int newLength = lbData.numLength * 2;
+			GadgetListBoxSetListLength( lbData.listbox, newLength );
+
+			// GeneralsX @bugfix UnicodeApocalypse 10/09/2026 Bail out if the resize failed (e.g. allocation failure) instead of assuming growth succeeded.
+			if (GadgetListBoxGetListLength( lbData.listbox ) != newLength)
+			{
+				return false;
+			}
+
+			lbData.numLength = newLength;
 		}
 	}
 
@@ -1119,63 +1127,163 @@ Bool isOfficialMap( AsciiString mapName )
 
 const MapMetaData *MapCache::findMap(AsciiString mapName)
 {
-	mapName.toLower();
-	MapCache::iterator it = find(mapName);
-	if (it == end())
+	if (mapName.isEmpty())
 		return nullptr;
-	return &(it->second);
+
+	auto normalizePath = [](const std::string& input) -> std::string {
+		std::string s = input;
+		std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+		for (char &c : s) {
+			if (c == '\\') c = '/';
+		}
+		while (s.length() > 1 && s.back() == '/') s.pop_back();
+		return s;
+	};
+
+	auto extractBaseLeaf = [](const std::string& normalized) -> std::string {
+		size_t lastSlash = normalized.find_last_of('/');
+		std::string base = (lastSlash != std::string::npos) ? normalized.substr(lastSlash + 1) : normalized;
+		if (base.length() > 4 && base.substr(base.length() - 4) == ".map") {
+			base = base.substr(0, base.length() - 4);
+		}
+		return base;
+	};
+
+	std::string normQuery = normalizePath(mapName.str());
+	std::string baseQuery = extractBaseLeaf(normQuery);
+
+	// Direct lookup with exact key or normalized keys
+	MapCache::iterator it = find(mapName);
+	if (it != end()) return &(it->second);
+
+	it = find(AsciiString(normQuery.c_str()));
+	if (it != end()) return &(it->second);
+
+	std::string normBackslash = normQuery;
+	for (char &c : normBackslash) { if (c == '/') c = '\\'; }
+	it = find(AsciiString(normBackslash.c_str()));
+	if (it != end()) return &(it->second);
+
+	// Comprehensive iterate fallback matching
+	for (it = begin(); it != end(); ++it)
+	{
+		AsciiString asciiDisplay;
+		asciiDisplay.translate(it->second.m_displayName);
+		std::string normDisplay = normalizePath(asciiDisplay.str());
+		if (normDisplay == normQuery || (!baseQuery.empty() && normDisplay == baseQuery))
+			return &(it->second);
+
+		std::string normKey = normalizePath(it->first.str());
+		std::string baseKey = extractBaseLeaf(normKey);
+		if (normKey == normQuery ||
+			(!normQuery.empty() && normKey.length() >= normQuery.length() && normKey.rfind(normQuery) == (normKey.length() - normQuery.length())) ||
+			(!normKey.empty() && normQuery.length() >= normKey.length() && normQuery.rfind(normKey) == (normQuery.length() - normKey.length())))
+		{
+			return &(it->second);
+		}
+
+		std::string normFn = normalizePath(it->second.m_fileName.str());
+		std::string baseFn = extractBaseLeaf(normFn);
+		if (!normFn.empty() && (
+			normFn == normQuery ||
+			(!normQuery.empty() && normFn.length() >= normQuery.length() && normFn.rfind(normQuery) == (normFn.length() - normQuery.length())) ||
+			(!normFn.empty() && normQuery.length() >= normFn.length() && normQuery.rfind(normFn) == (normQuery.length() - normFn.length()))))
+		{
+			return &(it->second);
+		}
+
+		if (!baseQuery.empty() && (baseKey == baseQuery || baseFn == baseQuery))
+		{
+			return &(it->second);
+		}
+	}
+
+#if !defined(_WIN32)
+	// Fallback 2: Check standard custom map folders on POSIX if not in cache
+	const char* home = getenv("HOME");
+	if (home && !baseQuery.empty() && s_failedMapLookups.find(baseQuery) == s_failedMapLookups.end())
+	{
+		std::vector<std::string> searchDirs = {
+			std::string(home) + "/Library/Application Support/GeneralsX/GeneralsZH/Maps",
+			std::string(home) + "/Documents/Command and Conquer Generals Zero Hour Data/Maps",
+			std::string(home) + "/Documents/Command & Conquer Generals Zero Hour Data/Maps"
+		};
+
+		for (const auto& sdir : searchDirs)
+		{
+			std::error_code ec;
+			if (!std::filesystem::exists(sdir, ec)) continue;
+
+			for (const auto& entry : std::filesystem::recursive_directory_iterator(sdir, std::filesystem::directory_options::skip_permission_denied, ec))
+			{
+				if (ec) break;
+				if (entry.is_regular_file(ec) && entry.path().extension() == ".map")
+				{
+					std::string candidateStem = entry.path().stem().string();
+					std::string normCandidateStem = normalizePath(candidateStem);
+					if (normCandidateStem == baseQuery)
+					{
+						FileInfo fileInfo;
+						AsciiString fullPath(entry.path().string().c_str());
+						AsciiString fullPathLower = fullPath;
+						fullPathLower.toLower();
+						if (TheFileSystem->getFileInfo(fullPath, &fileInfo))
+						{
+							AsciiString mapDir(sdir.c_str());
+							addMap(mapDir, fullPath, fullPathLower, fileInfo, FALSE);
+							MapCache::iterator foundIt = find(fullPathLower);
+							if (foundIt != end()) return &(foundIt->second);
+							for (MapCache::iterator fit = begin(); fit != end(); ++fit) {
+								if (fit->second.m_fileName == fullPath) return &(fit->second);
+							}
+						}
+					}
+				}
+			}
+		}
+
+		s_failedMapLookups.insert(baseQuery);
+	}
+#endif
+
+	return nullptr;
 }
 
 // ------------------------------------------------------------------------------------------------
 /** Embed the pristine map into the xfer stream */
 // ------------------------------------------------------------------------------------------------
-static void copyFromBigToDir( const AsciiString& infile, const AsciiString& outfile )
+static Bool copyFromBigToDir( const AsciiString& infile, const AsciiString& outfile )
 {
-	// open the map file
-
 	File *file = TheFileSystem->openFile( infile.str(), File::READ | File::BINARY );
 	if( file == nullptr )
 	{
 		DEBUG_CRASH(( "copyFromBigToDir - Error opening source file '%s'", infile.str() ));
-		throw SC_INVALID_DATA;
+		return FALSE;
 	}
 
-	// how big is the map file
-	Int fileSize = file->seek( 0, File::END );
-
-
-	// rewind to beginning of file
+	const Int fileSize = file->seek( 0, File::END );
 	file->seek( 0, File::START );
 
-	// allocate buffer big enough to hold the entire map file
 	char *buffer = NEW char[ fileSize ];
-	if( buffer == nullptr )
-	{
-		DEBUG_CRASH(( "copyFromBigToDir - Unable to allocate buffer for file '%s'", infile.str() ));
-		throw SC_INVALID_DATA;
-	}
-
-	// copy the file to the buffer
-	if( file->read( buffer, fileSize ) < fileSize )
-	{
-		DEBUG_CRASH(( "copyFromBigToDir - Error reading from file '%s'", infile.str() ));
-		throw SC_INVALID_DATA;
-	}
-	// close the BIG file
+	const Bool readOk = file->read( buffer, fileSize ) == fileSize;
 	file->close();
+	DEBUG_ASSERTCRASH( readOk, ( "copyFromBigToDir - Error reading from file '%s'", infile.str() ) );
 
-	File *filenew = TheFileSystem->openFile( outfile.str(), File::WRITE | File::CREATE | File::BINARY );
-
-	if( !filenew || filenew->write(buffer, fileSize) < fileSize)
+	Bool writeOk = FALSE;
+	if( readOk )
 	{
-		DEBUG_CRASH(( "copyFromBigToDir - Error writing to file '%s'", outfile.str() ));
-		throw SC_INVALID_DATA;
+		File *filenew = TheFileSystem->openFile( outfile.str(), File::WRITE | File::CREATE | File::BINARY );
+		if( filenew != nullptr )
+		{
+			writeOk = filenew->write( buffer, fileSize ) == fileSize;
+			filenew->close();
+		}
+		DEBUG_ASSERTCRASH( writeOk, ( "copyFromBigToDir - Error writing to file '%s'", outfile.str() ) );
 	}
 
-	filenew->close();
-
-	// delete the buffer
 	delete [] buffer;
+
+	return writeOk;
 }
 
 Image *getMapPreviewImage( AsciiString mapName )
@@ -1195,7 +1303,7 @@ Image *getMapPreviewImage( AsciiString mapName )
 	for(Int i = 0; i < portableName.getLength(); ++i)
 	{
 		char c = portableName.getCharAt(i);
-		if (c == '\\' || c == ':')
+		if (isPathSeparator(c) || c == ':')
 			tempName.concat('_');
 		else
 			tempName.concat(c);
@@ -1220,16 +1328,7 @@ Image *getMapPreviewImage( AsciiString mapName )
 
 		mapPreviewDir.concat(name);
 
-		Bool success = false;
-		try
-		{
-			copyFromBigToDir(tgaName, mapPreviewDir);
-			success = true;
-		}
-		catch (...)
-		{
-			success = false;	// no rethrow
-		}
+		const Bool success = copyFromBigToDir(tgaName, mapPreviewDir);
 
 		if (success)
 		{
@@ -1291,7 +1390,8 @@ Image *getMapPreviewImage( AsciiString mapName )
 		ChunkInputStream *pStrm = &theInputStream;
 		pStrm->absoluteSeek(0);
 		DataChunkInput file( pStrm );
-		if (file.isValidFileType()) {	// Backwards compatible files aren't valid data chunk files.
+		if (file.isValidFileType()) {
+			// Backwards compatible files aren't valid data chunk files.
 			// Read the waypoints.
 			file.registerParser( "MapPreview", AsciiString::TheEmptyString, parseMapPreviewChunk );
 			if (!file.parse(nullptr)) {

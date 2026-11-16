@@ -28,7 +28,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include "Lib/BaseType.h"
-#include "always.h"
+#include "WWLib/always.h"
 #include "W3DDevice/GameClient/W3DSmudge.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "Common/GameMemory.h"
@@ -37,6 +37,7 @@
 #include "WW3D2/texture.h"
 #include "WW3D2/dx8indexbuffer.h"
 #include "WW3D2/dx8wrapper.h"
+#include "WW3D2/Renderer.h"
 #include "WW3D2/rinfo.h"
 #include "WW3D2/camera.h"
 #include "WW3D2/sortingrenderer.h"
@@ -80,7 +81,23 @@ void W3DSmudgeManager::ReAcquireResources()
 {
 	ReleaseResources();
 
-	SurfaceClass *surface=DX8Wrapper::_Get_DX8_Back_Buffer();
+	// GeneralsX @bugfix fbraz 06/11/2026 Use current render target if active, falling back to backbuffer.
+	LPDIRECT3DDEVICE8 pDev = DX8Wrapper::_Get_D3D_Device8();
+	IDirect3DSurface8 *renderTargetD3D = nullptr;
+	SurfaceClass *surface = nullptr;
+	if (pDev && SUCCEEDED(pDev->GetRenderTarget(&renderTargetD3D)) && renderTargetD3D)
+	{
+		surface = NEW_REF(SurfaceClass, (renderTargetD3D));
+		renderTargetD3D->Release();
+	}
+	else
+	{
+		surface = DX8Wrapper::_Get_DX8_Back_Buffer();
+	}
+
+	if (!surface)
+		return;
+
 	SurfaceClass::SurfaceDescription surface_desc;
 
 	surface->Get_Description(surface_desc);
@@ -203,7 +220,8 @@ error:
 Bool W3DSmudgeManager::testHardwareSupport()
 {
 	if (m_hardwareSupportStatus == SMUDGE_SUPPORT_UNKNOWN)
-	{	//we have not done the test yet.
+	{
+		//we have not done the test yet.
 
 		IDirect3DTexture8 *backTexture=W3DShaderManager::getRenderTexture();
 		if (!backTexture || !W3DShaderManager::isRenderingToTexture())
@@ -314,21 +332,56 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	if (!testHardwareSupport())
 		return;
 
-	SurfaceClass *backBuffer = DX8Wrapper::_Get_DX8_Back_Buffer();
-
-	if (!backBuffer)
-		return;
-
-	SurfaceClass *background=m_backgroundTexture ? m_backgroundTexture->Get_Surface_Level() : nullptr;
-
-	if (!background)
+	// TheSuperHackers @performance stephanmeesters 14/08/2026 Early return when we have no smudge sets
+	// or if the global smudge set is the only set and contains no smudges.
+	if (m_usedSmudgeSetList.empty() || (m_usedSmudgeSetList.size() == 1 && m_usedSmudgeSetList.front()->getUsedSmudgeCount() == 0))
 	{
-		REF_PTR_RELEASE(backBuffer);
+		m_smudgeCountLastFrame = 0;
 		return;
 	}
 
+	// GeneralsX @bugfix fbraz 06/11/2026 Sample from active render target instead of backbuffer to avoid UI ghosting (fixes #384).
+	LPDIRECT3DDEVICE8 pDev = DX8Wrapper::_Get_D3D_Device8();
+	if (!pDev)
+		return;
+
+	IDirect3DSurface8 *renderTargetD3D = nullptr;
+	SurfaceClass *renderTarget = nullptr;
+	if (SUCCEEDED(pDev->GetRenderTarget(&renderTargetD3D)) && renderTargetD3D)
+	{
+		renderTarget = NEW_REF(SurfaceClass, (renderTargetD3D));
+		renderTargetD3D->Release();
+	}
+	else
+	{
+		renderTarget = DX8Wrapper::_Get_DX8_Back_Buffer();
+	}
+
+	if (!renderTarget)
+		return;
+
 	SurfaceClass::SurfaceDescription surface_desc;
-	backBuffer->Get_Description(surface_desc);
+	renderTarget->Get_Description(surface_desc);
+
+	// Ensure background texture matches current render target dimensions and format
+	if (!m_backgroundTexture ||
+		(int)m_backgroundTexture->Get_Width() != (int)surface_desc.Width ||
+		(int)m_backgroundTexture->Get_Height() != (int)surface_desc.Height ||
+		m_backgroundTexture->Get_Texture_Format() != surface_desc.Format)
+	{
+		REF_PTR_RELEASE(m_backgroundTexture);
+		m_backgroundTexture = MSGNEW("TextureClass") TextureClass(
+			surface_desc.Width, surface_desc.Height, surface_desc.Format,
+			MIP_LEVELS_1, TextureClass::POOL_DEFAULT, true);
+	}
+
+	SurfaceClass *background = m_backgroundTexture ? m_backgroundTexture->Get_Surface_Level() : nullptr;
+
+	if (!background)
+	{
+		REF_PTR_RELEASE(renderTarget);
+		return;
+	}
 
 	CameraClass &camera=rinfo.Camera;
 	Vector3 vsVert;
@@ -362,21 +415,20 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	//TODO: Optimize out this extra pass!
 	//TODO: Find size of screen rectangle that actually needs copying.
 
-	SmudgeSet *set=m_usedSmudgeSetList.Head();	//first set that didn't fit into render batch.
+	SmudgeSetDeque::iterator setIt=m_usedSmudgeSetList.begin();	//first set that didn't fit into render batch.
 	Int count = 0;
 
-	if (set)
-	{
-		//there are possibly some smudges to render, so make sure background particles have finished drawing.
-		SortingRendererClass::Flush();	//draw sorted translucent polys like particles.
-	}
+	// make sure background particles have finished drawing.
+	SortingRendererClass::Flush();	//draw sorted translucent polys like particles.
 
-	while (set)
+	for(; setIt != m_usedSmudgeSetList.end(); ++setIt)
 	{
-		Smudge *smudge=set->getUsedSmudgeList().Head();
+		SmudgeSet* set=*setIt;
+		SmudgeDeque::iterator smudgeIt=set->getUsedSmudgeList().begin();
 
-		for (; smudge; smudge = smudge->Succ())
+		for (; smudgeIt != set->getUsedSmudgeList().end(); ++smudgeIt)
 		{
+			Smudge* smudge=*smudgeIt;
 			if (!smudge->m_draw)
 				continue;
 
@@ -420,8 +472,6 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 
 			count++;	//increment visible smudge count.
 		}
-
-		set=set->Succ();	//advance to next node.
 	}
 
 	m_smudgeCountLastFrame = count;
@@ -429,19 +479,19 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	if (!count)
 	{
 		REF_PTR_RELEASE(background);
-		REF_PTR_RELEASE(backBuffer);
+		REF_PTR_RELEASE(renderTarget);
 		return;	//nothing to render.
 	}
 
-	//Copy the area of backbuffer occupied by smudges into an alternate buffer.
-	background->Copy(0,0,0,0,surface_desc.Width,surface_desc.Height,backBuffer);
+	//Copy the area of render target occupied by smudges into an alternate buffer.
+	background->Copy(0,0,0,0,surface_desc.Width,surface_desc.Height,renderTarget);
 
 	REF_PTR_RELEASE(background);
-	REF_PTR_RELEASE(backBuffer);
+	REF_PTR_RELEASE(renderTarget);
 
 	Matrix4x4 identity(true);
-	DX8Wrapper::Set_Transform(D3DTS_WORLD,identity);
-	DX8Wrapper::Set_Transform(D3DTS_VIEW,identity);
+	Renderer::Set_Transform(RenderTransform_World,identity);
+	Renderer::Set_Transform(RenderTransform_View,identity);
 
 	DX8Wrapper::Set_Index_Buffer(m_indexBuffer,0);
 	//DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueSpriteShader);
@@ -466,8 +516,8 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG2);
 
 	Int smudgesRemaining=count;
-	set=m_usedSmudgeSetList.Head();	//first smudge set that needs rendering.
-	Smudge	*remainingSmudgeStart=set->getUsedSmudgeList().Head();	//first smudge that needs rendering.
+	setIt=m_usedSmudgeSetList.begin();	//first smudge set that needs rendering.
+	SmudgeDeque::iterator smudgeIt = (*setIt)->getUsedSmudgeList().begin();	//first smudge that needs rendering.
 
 	while (smudgesRemaining)	//keep drawing smudges until we run out.
 	{
@@ -484,21 +534,23 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 			DynamicVBAccessClass::WriteLockClass lock(&vb_access);
 			VertexFormatXYZNDUV2* verts=lock.Get_Formatted_Vertex_Array();
 
-			while (set)
+			while (setIt != m_usedSmudgeSetList.end())
 			{
-				Smudge *smudge=remainingSmudgeStart;
+				SmudgeDeque& smudgeList = (*setIt)->getUsedSmudgeList();
 
-				for (; smudge; smudge=smudge->Succ())
+				for(; smudgeIt != smudgeList.end(); ++smudgeIt)
 				{
+					Smudge* smudge = *smudgeIt;
 					if (!smudge->m_draw)
+					{
 						continue;
+					}
 
 					Smudge::smudgeVertex *smVerts = smudge->m_verts;
 
 					//Check if we exceeded maximum number of smudges allowed per draw call.
 					if (smudgesInRenderBatch >= count)
 					{
-						remainingSmudgeStart = smudge;
 						goto flushSmudges;
 					}
 
@@ -525,10 +577,10 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 					smudgesInRenderBatch++;
 				}
 
-				set=set->Succ();	//advance to next node.
+				++setIt;	//advance to next node.
 
-				if (set)	//start next batch at beginning of set.
-					remainingSmudgeStart = set->getUsedSmudgeList().Head();
+				if (setIt != m_usedSmudgeSetList.end())	//start next batch at beginning of set.
+					smudgeIt = (*setIt)->getUsedSmudgeList().begin();
 			}
 		}
 
@@ -549,6 +601,8 @@ flushSmudges:
 		smudgesRemaining -= smudgesInRenderBatch;
 	}
 
+	// GeneralsX @bugfix fbraz 06/11/2026 Unbind background texture to prevent hazard on subsequent copy passes.
+	DX8Wrapper::Set_Texture(0, nullptr);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_COLOROP,D3DTOP_MODULATE);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAOP,D3DTOP_MODULATE);
 

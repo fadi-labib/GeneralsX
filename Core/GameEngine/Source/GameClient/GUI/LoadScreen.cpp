@@ -83,6 +83,11 @@
 #include "GameClient/WindowVideoManager.h"
 #include "GameClient/ChallengeGenerals.h"
 #include "GameLogic/FPUControl.h"
+
+#if defined(SAGE_USE_NGMP) && __has_include("GameNetwork/GeneralsOnline/OnlineServices_Manager.h")
+#include "GameNetwork/GeneralsOnline/OnlineServices_Manager.h"
+#define HAVE_NGMP_LOADSCREEN 1
+#endif
 #include "GameLogic/GameLogic.h"
 #include "GameNetwork/GameSpy/PeerDefs.h"
 #include "GameNetwork/GameSpy/PersistentStorageThread.h"
@@ -1284,7 +1289,8 @@ void MultiPlayerLoadScreen::init( GameInfo *game )
 	m_mapPreview = TheWindowManager->winGetWindowFromId( m_loadScreen,TheNameKeyGenerator->nameToKey( "MultiplayerLoadScreen.wnd:WinMapPreview"));
 	GameSlot *lSlot = game->getSlot(game->getLocalSlotNum());
 	const PlayerTemplate* pt;
-	if (lSlot->getPlayerTemplate() >= 0)
+	// GeneralsX @bugfix fbraz3 30/08/2026 Guard against null lSlot when getLocalSlotNum() returns -1
+	if (lSlot != nullptr && lSlot->getPlayerTemplate() >= 0)
 		pt = ThePlayerTemplateStore->getNthPlayerTemplate(lSlot->getPlayerTemplate());
 	else
 		pt = ThePlayerTemplateStore->findPlayerTemplate( TheNameKeyGenerator->nameToKey("FactionObserver") );
@@ -1295,7 +1301,8 @@ void MultiPlayerLoadScreen::init( GameInfo *game )
 		m_loadScreen->winSetEnabledImage(0, loadScreenImage);
 #else
 	// add portrait, features, and name for the local player's general
-	const GeneralPersona *localGeneral = TheChallengeGenerals->getGeneralByTemplateName( pt->getName() );
+	// GeneralsX @bugfix felipebraz 06/10/2026 Guard TheChallengeGenerals null-dereference
+	const GeneralPersona *localGeneral = TheChallengeGenerals ? TheChallengeGenerals->getGeneralByTemplateName( pt->getName() ) : nullptr;
 	const Image *portrait = nullptr;
 	UnicodeString localName;
 	if (localGeneral)
@@ -1313,6 +1320,9 @@ void MultiPlayerLoadScreen::init( GameInfo *game )
 			portrait = TheMappedImageCollection->findImageByName("SUFactionLogoLg_GLA");
 		else if (pt->getName() == "FactionChina")
 			portrait = TheMappedImageCollection->findImageByName("SNFactionLogoLg_China");
+		// GeneralsX @bugfix felipebraz 06/10/2026 Allow FactionObserver without asserting
+		else if (pt->getName() == "FactionObserver")
+			portrait = nullptr;
 		else
 			DEBUG_CRASH(("Unexpected player template"));
 
@@ -1549,7 +1559,8 @@ void GameSpyLoadScreen::init( GameInfo *game )
 	DEBUG_LOG(("NumPlayers %d", TheNetwork->getNumPlayers()));
 GameSlot *lSlot = game->getSlot(game->getLocalSlotNum());
 	const PlayerTemplate* pt;
-	if (lSlot->getPlayerTemplate() >= 0)
+	// GeneralsX @bugfix fbraz3 30/08/2026 Guard against null lSlot when getLocalSlotNum() returns -1
+	if (lSlot != nullptr && lSlot->getPlayerTemplate() >= 0)
 		pt = ThePlayerTemplateStore->getNthPlayerTemplate(lSlot->getPlayerTemplate());
 	else
 		pt = ThePlayerTemplateStore->findPlayerTemplate( TheNameKeyGenerator->nameToKey("FactionObserver") );
@@ -1560,7 +1571,8 @@ GameSlot *lSlot = game->getSlot(game->getLocalSlotNum());
 		m_loadScreen->winSetEnabledImage(0, loadScreenImage);
 #else
 	// add portrait, features, and name for the local player's general
-	const GeneralPersona *localGeneral = TheChallengeGenerals->getGeneralByTemplateName( pt->getName() );
+	// GeneralsX @bugfix felipebraz 06/10/2026 Guard TheChallengeGenerals null-dereference
+	const GeneralPersona *localGeneral = TheChallengeGenerals ? TheChallengeGenerals->getGeneralByTemplateName( pt->getName() ) : nullptr;
 	const Image *portrait = nullptr;
 	UnicodeString localName;
 	if (localGeneral)
@@ -1578,6 +1590,9 @@ GameSlot *lSlot = game->getSlot(game->getLocalSlotNum());
 			portrait = TheMappedImageCollection->findImageByName("SUFactionLogo144_GLA");
 		else if (pt->getName() == "FactionChina")
 			portrait = TheMappedImageCollection->findImageByName("SNFactionLogo144_China");
+		// GeneralsX @bugfix felipebraz 06/10/2026 Allow FactionObserver without asserting
+		else if (pt->getName() == "FactionObserver")
+			portrait = nullptr;
 		else
 			DEBUG_CRASH(("Unexpected player template"));
 
@@ -1837,6 +1852,14 @@ void GameSpyLoadScreen::update( Int percent )
 		TheNetwork->updateLoadProgress( percent );
 	TheNetwork->liteupdate();
 
+#if defined(HAVE_NGMP_LOADSCREEN)
+	// GeneralsX @bugfix fbraz3 06/09/2026 Tick NGMP during MP load screen to keep WebSocket signaling alive
+	if (NGMP_OnlineServicesManager::GetInstance() != nullptr)
+	{
+		NGMP_OnlineServicesManager::GetInstance()->update();
+	}
+#endif
+
 	//GadgetProgressBarSetProgress(m_progressBars[TheNetwork->getLocalPlayerID()], percent );
 
 	TheMouse->setCursorTooltip(UnicodeString::TheEmptyString);
@@ -1976,6 +1999,14 @@ void MapTransferLoadScreen::update( Int percent )
 	{
 		TheNetwork->liteupdate();
 	}
+
+#if defined(HAVE_NGMP_LOADSCREEN)
+	// GeneralsX @bugfix fbraz3 06/09/2026 Tick NGMP during map transfer screen
+	if (NGMP_OnlineServicesManager::GetInstance() != nullptr)
+	{
+		NGMP_OnlineServicesManager::GetInstance()->update();
+	}
+#endif
 
 	TheMouse->setCursorTooltip(UnicodeString::TheEmptyString);
 

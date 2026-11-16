@@ -32,9 +32,10 @@
 #include "GameClient/GameText.h"
 #include "GameClient/GadgetListBox.h"
 #include "GameNetwork/LANGameInfo.h"
+#include "GameNetwork/LANInterfaceDevice.h"
 #include "GameNetwork/LANAPICallbacks.h"
 #include "Common/MultiplayerSettings.h"
-#include "strtok_r.h"
+#include "WWLib/strtok_r.h"
 /*
 #include "GameNetwork/LAN.h"
 #include "GameNetwork/LANGame.h"
@@ -81,7 +82,27 @@ Bool LANGameSlot::isUser( UnicodeString userName )
 
 Bool LANGameSlot::isLocalPlayer() const
 {
-	return isHuman() && TheLAN && TheLAN->GetLocalIP() == getIP();
+	if (!isHuman() || !TheLAN)
+	{
+		return FALSE;
+	}
+
+	if (TheLAN->GetLocalIP() == getIP())
+	{
+		return TRUE;
+	}
+
+	// GeneralsX @bugfix Mr. Meesseeks 29/09/2026 If the host recorded our IP from another active local interface
+	// (e.g. Ethernet vs Wi-Fi), match by player name and verify that the slot IP is a local host address.
+	if (!TheLAN->GetMyName().isEmpty() && TheLAN->GetMyName().compare(getName()) == 0)
+	{
+		if (LANInterfaceDevice::isLocalHostAddress(getIP()))
+		{
+			return TRUE;
+		}
+	}
+
+	return FALSE;
 }
 
 // LANGameInfo ----------------------------------------
@@ -231,7 +252,8 @@ void LANDisplayGameList( GameWindow *gameListbox, LANGameInfo *gameList )
 			// GeneralsX @build GitHubCopilot 12/04/2026 Trace rendered LAN lobby rows to catch announce-vs-UI mismatches.
 			/* 			fprintf(stderr, "[LAN86] lobby render row=%d host=%d.%d.%d.%d hostName=%ls gameName=%ls inProgress=%d direct=%d\n",
 				addedIndex, PRINTF_IP_AS_4_INTS(gameList->getHostIP()), gameList->getPlayerName(0).str(), gameList->getName().str(),
-				gameList->isGameInProgress(), gameList->getIsDirectConnect()); */
+				gameList->isGameInProgress(), gameList->getIsDirectConnect());
+			fflush(stderr); */
 
 			if (selectedPtr == gameList)
 				indexToSelect = addedIndex;
@@ -246,7 +268,8 @@ void LANDisplayGameList( GameWindow *gameListbox, LANGameInfo *gameList )
 
 		// GeneralsX @build GitHubCopilot 12/04/2026 Surface final LAN lobby row count after each refresh.
 		/* 		fprintf(stderr, "[LAN86] lobby render complete count=%d selectedIndex=%d restoredIndex=%d\n",
-			gameCount, selectedIndex, indexToSelect); */
+			gameCount, selectedIndex, indexToSelect);
+		fflush(stderr); */
 	}
 }
 
@@ -292,7 +315,6 @@ Bool ParseGameOptionsString(LANGameInfo *game, AsciiString options)
 		{
 //			Int hasMap = game->getSlot(newLocalSlotNum)->hasMap();
 			newMapCRC = game->getMapCRC();
-			//DEBUG_LOG(("wasInGame:%d isInGame:%d hadMap:%d hasMap:%d oldMap:%s newMap:%s", wasInGame, isInGame, hadMap, hasMap, oldMap.str(), game->getMap().str()));
 			if ( (oldMapCRC ^ newMapCRC)/*(hasMap ^ hadMap)*/ || (!wasInGame && isInGame) )
 			{
 				// it changed.  send it

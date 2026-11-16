@@ -15,7 +15,7 @@ GAMESPY_LIB="${BUILD_DIR}/libgamespy.so"
 FFMPEG_LIB_DIR="/usr/lib/x86_64-linux-gnu"
 FFMPEG_DEP_LIB_DIR="/lib/x86_64-linux-gnu"
 BINARY_SRC="${BUILD_DIR}/Generals/GeneralsX"
-DXVK_CONF_SRC="${PROJECT_ROOT}/Generals/Run/dxvk.conf"
+DXVK_CONF_SRC="${PROJECT_ROOT}/resources/dxvk/dxvk.conf"
 OUTPUT_TARBALL="${PROJECT_ROOT}/GeneralsX-linux-x86_64.tar.gz"
 
 copy_ldd_deps() {
@@ -26,6 +26,9 @@ copy_ldd_deps() {
         case "${dep}" in
             linux-vdso.so.1 | \
             /lib64/ld-linux* | /lib/*/ld-linux* | /usr/lib/*/ld-linux* | /usr/lib64/ld-linux* | \
+            /usr/lib/libc.so.* | /usr/lib/libm.so.* | /usr/lib/libpthread.so.* | /usr/lib/librt.so.* | /usr/lib/libdl.so.* | \
+            */libmvec.so.* | */libresolv.so.* | */libutil.so.* | */libanl.so.* | */libnsl.so.1 | */libnss_*.so.* | \
+            */libthread_db.so.* | */libBrokenLocale.so.* | */libc_malloc_debug.so.* | */libmemusage.so | */libpcprofile.so | \
             /lib/*/libc.so.* | /lib64/libc.so.* | /usr/lib/*/libc.so.* | /usr/lib64/libc.so.* | \
             /lib/*/libm.so.* | /lib64/libm.so.* | /usr/lib/*/libm.so.* | /usr/lib64/libm.so.* | \
             /lib/*/libpthread.so.* | /lib64/libpthread.so.* | /usr/lib/*/libpthread.so.* | /usr/lib64/libpthread.so.* | \
@@ -111,6 +114,12 @@ cp "${SDL3_IMAGE_LIB_DIR}"/libSDL3_image.so* "${BUNDLE_DIR}/"
 echo "  + GameSpy library"
 cp "${GAMESPY_LIB}" "${BUNDLE_DIR}/"
 
+# GameMath library (if built as shared)
+if compgen -G "${BUILD_DIR}/_deps/gamemath-build/libgm.so*" > /dev/null 2>&1; then
+    echo "  + GameMath library (libgm.so)"
+    cp "${BUILD_DIR}"/_deps/gamemath-build/libgm.so* "${BUNDLE_DIR}/" 2>/dev/null || true
+fi
+
 # SagePatch (optional, gated by RTS_BUILD_OPTION_SAGE_PATCH at configure time).
 SAGE_PATCH_LIB="${BUILD_DIR}/Patches/SagePatch/libsage_patch.so"
 if [[ -f "${SAGE_PATCH_LIB}" ]]; then
@@ -152,6 +161,14 @@ else
     echo "WARNING: ${DXVK_CONF_SRC} not found - terrain shaders may fail"
 fi
 
+# GeneralsX @feature fbraz3 14/10/2026 Bundle generalsx.big archive
+echo "  + generalsx.big"
+GENERALSX_BIG="${BUILD_DIR}/generalsx.big"
+python3 "${PROJECT_ROOT}/scripts/tooling/build_big.py" pack "${PROJECT_ROOT}/assets/generalsx-big" "${GENERALSX_BIG}"
+if [[ -f "${GENERALSX_BIG}" ]]; then
+    cp "${GENERALSX_BIG}" "${BUNDLE_DIR}/generalsx.big"
+fi
+
 # Run wrapper
 echo "  + run.sh"
 cat > "${BUNDLE_DIR}/run.sh" << 'WRAPPER'
@@ -178,10 +195,39 @@ fi
 # DXVK HUD is disabled by default because Generals has a native FPS counter.
 export DXVK_HUD="${DXVK_HUD:-0}"
 
+# GeneralsX @bugfix fbraz3 12/10/2026 Point DXVK to local config file if present
+if [[ -f "${SCRIPT_DIR}/dxvk.conf" && -z "${DXVK_CONFIG_FILE:-}" ]]; then
+    export DXVK_CONFIG_FILE="${SCRIPT_DIR}/dxvk.conf"
+fi
+
 # Auto-detect base Generals install path
 if [[ -z "${CNC_GENERALS_INSTALLPATH:-}" && -d "${SCRIPT_DIR}/../Generals" ]]; then
     export CNC_GENERALS_INSTALLPATH="${SCRIPT_DIR}/../Generals/"
 fi
+
+# GeneralsX @feature fbraz3 04/11/2026 Stage generalsx.big into active asset root and remove legacy loose overrides
+_gen_asset_dir="${CNC_GENERALS_PATH:-${GENERALSX_ASSET_PATH:-${CNC_GENERALS_INSTALLPATH:-}}}"
+if [[ -f "${SCRIPT_DIR}/generalsx.big" ]]; then
+    if [[ -f "Generals.big" && "$(pwd)" != "${SCRIPT_DIR}" ]]; then
+        _stage_tmp="generalsx.big.tmp.$$"
+        rm -f "${_stage_tmp}" 2>/dev/null || true
+        if cp -f "${SCRIPT_DIR}/generalsx.big" "${_stage_tmp}" 2>/dev/null && mv -f "${_stage_tmp}" "generalsx.big" 2>/dev/null; then
+            rm -f "Data/INI/FXListGeneralsX.ini" 2>/dev/null || true
+        else
+            rm -f "${_stage_tmp}" 2>/dev/null || true
+        fi
+    fi
+    if [[ -n "${_gen_asset_dir}" && -d "${_gen_asset_dir}" && "${_gen_asset_dir}" != "${SCRIPT_DIR}" ]]; then
+        _stage_tmp="${_gen_asset_dir}/generalsx.big.tmp.$$"
+        rm -f "${_stage_tmp}" 2>/dev/null || true
+        if cp -f "${SCRIPT_DIR}/generalsx.big" "${_stage_tmp}" 2>/dev/null && mv -f "${_stage_tmp}" "${_gen_asset_dir}/generalsx.big" 2>/dev/null; then
+            rm -f "${_gen_asset_dir}/Data/INI/FXListGeneralsX.ini" 2>/dev/null || true
+        else
+            rm -f "${_stage_tmp}" 2>/dev/null || true
+        fi
+    fi
+fi
+rm -f "${SCRIPT_DIR}/Data/INI/FXListGeneralsX.ini" 2>/dev/null || true
 
 # GeneralsX @bugfix BenderAI 06/03/2026 - Exclude LLVMpipe Vulkan ICD (LLVM 20.x crash workaround)
 # libvulkan_lvp.so (LLVMpipe) crashes during static initialization with LLVM 20.x.
@@ -211,23 +257,16 @@ if [[ -z "${VK_DRIVER_FILES:-}" && -z "${VK_ICD_FILENAMES:-}" ]]; then
     fi
 fi
 
-# GeneralsX @bugfix 09/03/2026 - Work around openal-soft 1.25.1 movaps alignment crash
-# alcOpenDevice() crashes with SIGSEGV in a 'movaps %xmm1, 0x26260(%rbx)' instruction
-# inside openal-soft's device initializer. movaps requires 16-byte alignment; if the
-# ALCdevice struct is not aligned correctly, it faults regardless of which backend is
-# selected. Disabling CPU extensions forces openal-soft to use scalar code paths that
-# do not have alignment requirements. The pipewire backend is also excluded because it
-# has its own crash at device-open time on PipeWire 1.4.x.
-# These env vars are read by openal-soft's static constructor at library load time,
-# so they must be set here in the launcher before the binary starts.
-# User can override by setting ALSOFT_DISABLE_CPU_EXTS or ALSOFT_DRIVERS explicitly.
-if [[ -z "${ALSOFT_DISABLE_CPU_EXTS:-}" ]]; then
-    export ALSOFT_DISABLE_CPU_EXTS="all"
-    echo "INFO: OpenAL: ALSOFT_DISABLE_CPU_EXTS=all (movaps alignment crash workaround)"
-fi
-if [[ -z "${ALSOFT_DRIVERS:-}" ]]; then
-    export ALSOFT_DRIVERS="pulse,alsa,oss,jack,null,wave"
-    echo "INFO: OpenAL: ALSOFT_DRIVERS=$ALSOFT_DRIVERS (pipewire excluded)"
+# Legacy OpenAL workaround (only applied if executable links to libopenal.so)
+if ldd "${SCRIPT_DIR}/GeneralsX" 2>/dev/null | grep -q 'libopenal\.so'; then
+    if [[ -z "${ALSOFT_DISABLE_CPU_EXTS:-}" ]]; then
+        export ALSOFT_DISABLE_CPU_EXTS="all"
+        echo "INFO: OpenAL: ALSOFT_DISABLE_CPU_EXTS=all (movaps alignment crash workaround)"
+    fi
+    if [[ -z "${ALSOFT_DRIVERS:-}" ]]; then
+        export ALSOFT_DRIVERS="pulse,alsa,oss,jack,null,wave"
+        echo "INFO: OpenAL: ALSOFT_DRIVERS=$ALSOFT_DRIVERS (pipewire excluded)"
+    fi
 fi
 
 exec "${SCRIPT_DIR}/GeneralsX" "$@"

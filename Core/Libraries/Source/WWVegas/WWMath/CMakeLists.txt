@@ -77,7 +77,6 @@ set(WWMATH_SRC
     vp.h
     wwmath.cpp
     wwmath.h
-    wwmathids.h
 )
 
 add_library(core_wwmath STATIC)
@@ -88,14 +87,15 @@ target_sources(core_wwmath PRIVATE ${WWMATH_SRC})
 target_link_libraries(core_wwmath PRIVATE
     core_wwcommon
     corei_always
-    core_wwsaveload
 )
 
-if (SAGE_USE_DETERMINISTIC_MATH)
-    target_link_libraries(core_wwmath PUBLIC
-        gamemath
-    )
-endif()
+target_link_libraries(core_wwmath PUBLIC
+    gamemath
+)
+
+target_link_libraries(core_wwmath PUBLIC
+    gamemath
+)
 
 # @todo Test its impact and see what to do with the legacy functions.
 #add_compile_definitions(core_wwmath PUBLIC ALLOW_TEMPORARIES) # Enables legacy math with "temporaries"

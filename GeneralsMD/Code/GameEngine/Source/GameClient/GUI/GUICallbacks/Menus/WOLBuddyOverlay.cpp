@@ -51,8 +51,17 @@
 #include "GameNetwork/GameSpy/BuddyDefs.h"
 #include "GameNetwork/GameSpy/BuddyThread.h"
 #include "GameNetwork/GameSpy/LobbyUtils.h"
-#include "GameNetwork/GameSpy/PersistentStorageDefs.h"
+#include "GameNetwork/GameSpy/BuddyThread.h"
+#include "GameNetwork/GameSpy/PeerThread.h"
 #include "GameNetwork/GameSpy/PersistentStorageThread.h"
+
+#if defined(SAGE_USE_NGMP)
+#include "GameNetwork/GeneralsOnline/OnlineServices_Manager.h"
+#include "GameNetwork/GeneralsOnline/NGMPGame.h"
+extern NGMPGame* TheNGMPGame;
+#endif
+
+#include "GameNetwork/GameSpy/PersistentStorageDefs.h"
 #include "GameNetwork/GameSpy/ThreadUtils.h"
 
 // PRIVATE DATA ///////////////////////////////////////////////////////////////////////////////////
@@ -98,7 +107,11 @@ void insertChat( BuddyMessage msg );
 static GameWindow *rcMenu = nullptr;
 static WindowLayout *noticeLayout = nullptr;
 static UnsignedInt noticeExpires = 0;
-enum { NOTIFICATION_EXPIRES = 3000 };
+#if defined(SAGE_USE_NGMP)
+	enum { NOTIFICATION_EXPIRES = 5000 };
+#else
+	enum { NOTIFICATION_EXPIRES = 3000 };
+#endif
 
 void setUnignoreText( WindowLayout *layout, AsciiString nick, GPProfile id);
 void refreshIgnoreList();
@@ -215,10 +228,8 @@ WindowMsgHandledType BuddyControlSystem( GameWindow *window, UnsignedInt msg,
 					if(rc->pos < 0)
 						break;
 
-					// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-					GPProfile profileID = static_cast<GPProfile>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(control, rc->pos, 0)));
-					// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-					RCItemType itemType = static_cast<RCItemType>(static_cast<Int>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(control, rc->pos, 1))));
+					GPProfile profileID = (GPProfile)(intptr_t)GadgetListBoxGetItemData(control, rc->pos, 0);
+					RCItemType itemType = (RCItemType)(intptr_t)GadgetListBoxGetItemData(control, rc->pos, 1);
 					UnicodeString nick = GadgetListBoxGetText(control, rc->pos);
 
 					GadgetListBoxSetSelected(control, rc->pos);
@@ -269,14 +280,32 @@ WindowMsgHandledType BuddyControlSystem( GameWindow *window, UnsignedInt msg,
 				GadgetListBoxGetSelected(buddyControls.listboxBuddies, &selected);
 				if (selected >= 0)
 				{
-					// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-					GPProfile selectedProfile = static_cast<GPProfile>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(buddyControls.listboxBuddies, selected)));
+					GPProfile selectedProfile = (GPProfile)(intptr_t)GadgetListBoxGetItemData(buddyControls.listboxBuddies, selected);
 					BuddyInfoMap *m = TheGameSpyInfo->getBuddyMap();
 					BuddyInfoMap::iterator recipIt = m->find(selectedProfile);
 					if (recipIt == m->end())
 						break;
 
 					DEBUG_LOG(("Trying to send a buddy message to %d.", selectedProfile));
+#if defined(SAGE_USE_NGMP)
+					if (TheNGMPGame && TheNGMPGame->isGameInProgress() &&
+						!ThePlayerList->getLocalPlayer()->isPlayerActive())
+					{
+						for (Int i=0; i<MAX_SLOTS; ++i)
+						{
+							NGMPGameSlot* slot = TheNGMPGame->getGameSpySlot(i);
+							if (slot && slot->isOccupied() && slot->getProfileID() == selectedProfile)
+							{
+								if (buddyControls.listboxChat)
+								{
+									GadgetListBoxAddEntryText( buddyControls.listboxChat, TheGameText->fetch("Buddy:CantTalkToIngameBuddy"),
+										GameSpyColor[GSCOLOR_DEFAULT], -1, -1 );
+								}
+								return MSG_HANDLED;
+							}
+						}
+					}
+#else
 					if (TheGameSpyGame && TheGameSpyGame->isInGame() && TheGameSpyGame->isGameInProgress() &&
 						!ThePlayerList->getLocalPlayer()->isPlayerActive())
 					{
@@ -296,6 +325,7 @@ WindowMsgHandledType BuddyControlSystem( GameWindow *window, UnsignedInt msg,
 							}
 						}
 					}
+#endif
 
 					// read the user's input and clear the entry box
 					UnicodeString txtInput;
@@ -396,8 +426,7 @@ void updateBuddyInfo()
 
 	GadgetListBoxGetSelected(buddyControls.listboxBuddies, &selected);
 	if (selected >= 0)
-		// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-		selectedProfile = static_cast<GPProfile>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(buddyControls.listboxBuddies, selected)));
+		selectedProfile = (GPProfile)(intptr_t)GadgetListBoxGetItemData(buddyControls.listboxBuddies, selected);
 
 	selected = -1;
 	GadgetListBoxReset(buddyControls.listboxBuddies);
@@ -703,7 +732,7 @@ void PopulateOldBuddyMessages()
 	BuddyMessageList *messages = TheGameSpyInfo->getBuddyMessages();
 	for (BuddyMessageList::iterator mIt = messages->begin(); mIt != messages->end(); ++mIt)
 	{
-		BuddyMessage message = *mIt;
+		const BuddyMessage &message = *mIt;
 		insertChat(message);
 	}
 }
@@ -790,8 +819,13 @@ void WOLBuddyOverlayShutdown( WindowLayout *layout, void *userData )
 //-------------------------------------------------------------------------------------------------
 void WOLBuddyOverlayUpdate( WindowLayout * layout, void *userData)
 {
+#if defined(SAGE_USE_NGMP)
+	if (!NGMP_OnlineServicesManager::getInstance().isLoggedIn())
+		GameSpyCloseOverlay(GSOVERLAY_BUDDY);
+#else
 	if (!TheGameSpyBuddyMessageQueue || !TheGameSpyBuddyMessageQueue->isConnected())
 		GameSpyCloseOverlay(GSOVERLAY_BUDDY);
+#endif
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -888,8 +922,7 @@ WindowMsgHandledType WOLBuddyOverlaySystem( GameWindow *window, UnsignedInt msg,
 						break;
 
 					Bool isBuddy = false, isRequest = false;
-					// GeneralsX @build BenderAI 12/02/2026 64-bit safe pointer cast
-					GPProfile profileID = static_cast<GPProfile>(reinterpret_cast<intptr_t>(GadgetListBoxGetItemData(control, rc->pos)));
+					GPProfile profileID = (GPProfile)(intptr_t)GadgetListBoxGetItemData(control, rc->pos);
 					UnicodeString nick = GadgetListBoxGetText(control, rc->pos);
 					BuddyInfoMap *buddies = TheGameSpyInfo->getBuddyMap();
 					BuddyInfoMap::iterator bIt;

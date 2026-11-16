@@ -62,6 +62,11 @@ ln -sf libSDL3_image.0.4.0.dylib "${RUNTIME_DIR}/libSDL3_image.dylib" 2>/dev/nul
 echo "  Copying GameSpy library..."
 cp -v "${GAMESPY_LIB}" "${RUNTIME_DIR}/"
 
+echo "  Copying GameNetworkingSockets library..."
+if [[ -f "${BUILD_DIR}/bin/libGameNetworkingSockets.dylib" ]]; then
+    cp -v "${BUILD_DIR}/bin/libGameNetworkingSockets.dylib" "${RUNTIME_DIR}/"
+fi
+
 echo "  Copying DXVK libraries (d3d9 + d3d8)..."
 if [[ ! -f "${DXVK_D3D9_LIB}" || ! -f "${DXVK_D3D8_LIB}" ]]; then
     echo "ERROR: Required DXVK dylibs were not found in expected locations:"
@@ -106,6 +111,54 @@ else
     echo "WARNING: ${DXVK_CONF_SRC} not found; DXVK will use defaults."
 fi
 
+# GeneralsX @feature fbraz3 14/10/2026 Deploy generalsx.big archive
+GENERALSX_BIG="${BUILD_DIR}/generalsx.big"
+python3 "${PROJECT_ROOT}/scripts/tooling/build_big.py" pack "${PROJECT_ROOT}/assets/generalsx-big" "${GENERALSX_BIG}"
+if [[ -f "${GENERALSX_BIG}" ]]; then
+    echo "  Deploying generalsx.big..."
+    cp -v "${GENERALSX_BIG}" "${RUNTIME_DIR}/generalsx.big"
+    if [[ -d "${HOME}/GeneralsX/data/Generals" ]]; then
+        cp -v "${GENERALSX_BIG}" "${HOME}/GeneralsX/data/Generals/generalsx.big"
+    fi
+fi
+rm -f "${RUNTIME_DIR}/Data/INI/FXListGeneralsX.ini"
+if [[ -d "${HOME}/GeneralsX/data/Generals" ]]; then
+    rm -f "${HOME}/GeneralsX/data/Generals/Data/INI/FXListGeneralsX.ini"
+fi
+
+# GeneralsX @bugfix felipebraz 16/10/2026 Symlink Data/Cursors into runtime dir if present in asset path
+GEN_ASSET_DIR="${CNC_GENERALS_PATH:-}"
+if [[ -z "${GEN_ASSET_DIR}" || ! -d "${GEN_ASSET_DIR}/Data/Cursors" ]]; then
+    GEN_ASSET_DIR="${HOME}/GeneralsX/data/Generals"
+fi
+if [[ -d "${GEN_ASSET_DIR}/Data/Cursors" ]]; then
+    GEN_ASSET_DIR="$(cd "${GEN_ASSET_DIR}" && pwd)"
+    mkdir -p "${RUNTIME_DIR}/Data"
+    # GeneralsX @bugfix felipebraz 17/10/2026 Refresh cursor symlink on deployment while preserving user-managed directory
+    if [[ -L "${RUNTIME_DIR}/Data/Cursors" || ! -e "${RUNTIME_DIR}/Data/Cursors" ]]; then
+        ln -sfn "${GEN_ASSET_DIR}/Data/Cursors" "${RUNTIME_DIR}/Data/Cursors"
+        echo "  Symlinked Data/Cursors from ${GEN_ASSET_DIR}/Data/Cursors"
+    fi
+fi
+
+echo "  Deploying Fontconfig config & fonts..."
+mkdir -p "${RUNTIME_DIR}/fonts"
+if [[ -d "${PROJECT_ROOT}/assets/fonts" ]]; then
+    cp -v "${PROJECT_ROOT}/assets/fonts"/*.ttf "${RUNTIME_DIR}/fonts/"
+    cp -v "${PROJECT_ROOT}/assets/fonts/LICENSE.liberation" "${RUNTIME_DIR}/fonts/"
+    cp -v "${PROJECT_ROOT}/assets/fonts/LICENSE.fontawesome" "${RUNTIME_DIR}/fonts/"
+fi
+
+FONTCONFIG_ETC_DIR="${BUILD_DIR}/vcpkg_installed/arm64-osx/etc/fonts"
+if [[ -f "${FONTCONFIG_ETC_DIR}/fonts.conf" ]]; then
+    mkdir -p "${RUNTIME_DIR}/fontconfig"
+    cp -v "${FONTCONFIG_ETC_DIR}/fonts.conf" "${RUNTIME_DIR}/fontconfig/fonts.conf"
+    rm -rf "${RUNTIME_DIR}/fontconfig/conf.d"
+    if [[ -d "${FONTCONFIG_ETC_DIR}/conf.d" ]]; then
+        cp -R "${FONTCONFIG_ETC_DIR}/conf.d" "${RUNTIME_DIR}/fontconfig/conf.d"
+    fi
+fi
+
 echo "  Writing run.sh wrapper..."
 cat > "${RUNTIME_DIR}/run.sh" << 'WRAPPER'
 #!/bin/bash
@@ -123,7 +176,11 @@ if [[ -f "${SCRIPT_DIR}/MoltenVK_icd.json" ]]; then
     export VK_DRIVER_FILES="${SCRIPT_DIR}/MoltenVK_icd.json"
 fi
 
-exec "${SCRIPT_DIR}/GeneralsX" "$@"
+# GeneralsX @bugfix felipebraz 17/10/2026 Run from runtime directory so local asset resolution (Data/Cursors, INIs) is authoritative
+cd "${SCRIPT_DIR}" || exit 1
+
+"${SCRIPT_DIR}/GeneralsX" "$@" 2>&1 | grep --line-buffered -v "Unimplemented render state D3DRS_PATCHSEGMENTS" | grep --line-buffered -v "No accelerated colorspace conversion"
+exit ${PIPESTATUS[0]}
 WRAPPER
 chmod +x "${RUNTIME_DIR}/run.sh"
 

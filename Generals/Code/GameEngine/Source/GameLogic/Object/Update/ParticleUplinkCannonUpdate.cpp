@@ -290,11 +290,34 @@ Bool ParticleUplinkCannonUpdate::initiateIntentToDoSpecialPower(const SpecialPow
 	}
 	else
 	{
-		DEBUG_ASSERTCRASH(targetPos, ("Particle Cannon target data must not be null"));
+		DEBUG_ASSERTCRASH(targetPos || targetObj, ("Particle Cannon target data must not be null"));
+
+		Coord3D pos;
+		if( targetPos )
+		{
+			pos.set( *targetPos );
+		}
+		else if( targetObj )
+		{
+			pos.set( *targetObj->getPosition() );
+		}
+#if !(RTS_ZEROHOUR && RETAIL_COMPATIBLE_CRC)
+		else
+		{
+			return false;
+		}
+#endif
+
+#if !RETAIL_COMPATIBLE_CRC
+		m_manualTargetMode = FALSE;
+#if !RTS_GENERALS
+		m_scriptedWaypointMode = FALSE;
+#endif
+#endif
 
 		//All computer controlled players have automatic control -- the "S" curve.
 		UnsignedInt now = TheGameLogic->getFrame();
-		m_initialTargetPosition.set( *targetPos );
+		m_initialTargetPosition.set( pos );
 		m_startAttackFrame = max( now, (UnsignedInt)1 );
 		m_laserStatus = LASERSTATUS_NONE;
 		setLogicalStatus( STATUS_READY_TO_FIRE );
@@ -458,11 +481,6 @@ UpdateSleepTime ParticleUplinkCannonUpdate::update()
 				break;
 		}
 
-#if RETAIL_COMPATIBLE_CRC
-		// TheSuperHackers @info helmutbuhler 12/06/2025
-		// Note that this code is very brittle for retail compatibility. Inlining isFiring
-		// can cause incompatibility in some circumstances.
-#endif
 		const Bool isFiring = orbitalBirthFrame <= now && now < orbitalDeathFrame;
 		if ( isFiring )
 		{
@@ -474,18 +492,26 @@ UpdateSleepTime ParticleUplinkCannonUpdate::update()
 				//First determine the factor of time completed (ranges between 0.0 and 1.0)
 				Real factor = (Real)(now - orbitalBirthFrame) / (Real)(orbitalDeathFrame - orbitalBirthFrame);
 
-				//We're generating a swath that travels the points between WWMath::SinTrig( -1PI ) and WWMath::SinTrig( 1PI )
+				//We're generating a swath that travels the points between WWMath::Sin( -1PI ) and WWMath::Sin( 1PI )
 				Real radians = (factor * TWO_PI) - PI;
 				Real cxDistance = (factor * data->m_swathOfDeathDistance ) - (data->m_swathOfDeathDistance * 0.5f); //cx is cartesian x
 
 				//Now calculate the amplitude value.
-				Real height = WWMath::SinTrig( radians );
+				Real height = WWMath::Sin( radians );
 				Real cxHeight = height * data->m_swathOfDeathAmplitude;
 
 				Coord3D buildingToInitialTargetVector;
 				buildingToInitialTargetVector.set( m_initialTargetPosition );
 				buildingToInitialTargetVector.sub( *me->getPosition() );
+
+#if RTS_GENERALS && RETAIL_COMPATIBLE_CRC
+				// TheSuperHackers @info Caball009 25/09/2026 VC6 is extremely sensitive to the ordering of floating-point operations in this code section.
+				// Nudge the compiler to generate the call to Coord3D::length as sqrt((x*x + y*y) + z*z), rather than sqrt((z*z + x*x) + y*y).
+				// The latter ordering is not retail-compatible here.
+				Real targetDistance = sqrt(sqr(buildingToInitialTargetVector.x) + sqr(buildingToInitialTargetVector.y) + sqr(buildingToInitialTargetVector.z));
+#else
 				Real targetDistance = buildingToInitialTargetVector.length();
+#endif
 
 				//Calculate the point position assuming the target position is on the x axis relative to the building.
 				m_currentTargetPosition.x = cxDistance + targetDistance;
@@ -501,7 +527,7 @@ UpdateSleepTime ParticleUplinkCannonUpdate::update()
 				cartesianTargetVector.Normalize();
 
 				Real dotProduct = Vector2::Dot_Product( buildingToTargetVector, cartesianTargetVector );
-				dotProduct = __min( 0.99999f, __max( -0.99999f, dotProduct ) ); //Account for numerical errors.  Also, WWMath::ACosTrig(-1.00000) is coming out QNAN on the superweapon general map.  Heh.
+				dotProduct = __min( 0.99999f, __max( -0.99999f, dotProduct ) ); //Account for numerical errors.  Also, WWMath::Acos(-1.00000) is coming out QNAN on the superweapon general map.  Heh.
 
 				Real angle = (Real)ACos( dotProduct );
 

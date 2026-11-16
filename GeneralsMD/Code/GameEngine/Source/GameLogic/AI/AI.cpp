@@ -448,7 +448,8 @@ AIGroupPtr AI::createGroup()
 #if RETAIL_COMPATIBLE_AIGROUP
 	AIGroup *group = newInstance(AIGroup);
 #else
-	AIGroupPtr group = AIGroupPtr::Create_NoAddRef(newInstance(AIGroup));
+	AIGroupPtr group;
+	group.Assign_No_Add_Ref(newInstance(AIGroup));
 #endif
 
 	// add it to the list
@@ -709,8 +710,8 @@ Object *AI::findClosestEnemy( const Object *me, Real range, UnsignedInt qualifie
 		}
 
 		Real distSqr = ThePartitionManager->getDistanceSquared(me, theEnemy, FROM_BOUNDINGSPHERE_2D);
-		Real dist = WWMath::SqrtOrigin(distSqr);
-		Int modifier = dist/getAiData()->m_attackPriorityDistanceModifier;
+		Real dist = WWMath::Sqrtf(distSqr);
+		Int modifier = (Int)WWMath::Div_Safe(dist, getAiData()->m_attackPriorityDistanceModifier);
 		Int modPriority = curPriority-modifier;
 		if (modPriority < 1)
 			modPriority = 1;

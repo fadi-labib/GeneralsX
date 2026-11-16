@@ -461,17 +461,24 @@ void UpdateSlotList( GameInfo *myGame, GameWindow *comboPlayer[],
 				GadgetComboBoxSetSelectedPos(comboPlayer[i], slot->getState(), TRUE);
         if( buttonAccept &&  buttonAccept[i] )
 				  buttonAccept[i]->winHide(TRUE);
+
+				// GeneralsX @refactor fbraz3 25/08/2026 Support host migration and AI slot names
+				GadgetComboBoxSetText(comboPlayer[i], slot->getName());
 			}
-/*
-			if (myGame->getLocalSlotNum() == i && i!=0)
-			{
-				if (comboPlayer[i])
-					comboPlayer[i]->winEnable( TRUE );
-			}
-			else*/ if (!myGame->amIHost())
+			if (myGame->getLocalSlotNum() == i)
 			{
 				if (comboPlayer[i])
 					comboPlayer[i]->winEnable( FALSE );
+			}
+			else if (!myGame->amIHost())
+			{
+				if (comboPlayer[i])
+					comboPlayer[i]->winEnable( FALSE );
+			}
+			else
+			{
+				if (comboPlayer[i])
+					comboPlayer[i]->winEnable( TRUE );
 			}
 			//if( i == myGame->getLocalSlotNum())
       if((comboColor[i] != nullptr) && BitIsSet(comboColor[i]->winGetStatus(), WIN_STATUS_ENABLED))
@@ -481,7 +488,7 @@ void UpdateSlotList( GameInfo *myGame, GameWindow *comboPlayer[],
 				max = GadgetComboBoxGetLength(comboColor[i]);
 				for (idx=0; idx<max; ++idx)
 				{
-					Int color = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(comboColor[i], idx)));
+					Int color = (Int)(intptr_t)GadgetComboBoxGetItemData(comboColor[i], idx);
 					if (color == slot->getColor())
 					{
 						GadgetComboBoxSetSelectedPos(comboColor[i], idx, TRUE);
@@ -494,7 +501,7 @@ void UpdateSlotList( GameInfo *myGame, GameWindow *comboPlayer[],
 				max = GadgetComboBoxGetLength(comboTeam[i]);
 				for (idx=0; idx<max; ++idx)
 				{
-					Int team = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(comboTeam[i], idx)));
+					Int team = (Int)(intptr_t)GadgetComboBoxGetItemData(comboTeam[i], idx);
 					if (team == slot->getTeamNumber())
 					{
 						GadgetComboBoxSetSelectedPos(comboTeam[i], idx, TRUE);
@@ -507,7 +514,7 @@ void UpdateSlotList( GameInfo *myGame, GameWindow *comboPlayer[],
 				max = GadgetComboBoxGetLength(comboPlayerTemplate[i]);
 				for (idx=0; idx<max; ++idx)
 				{
-					Int playerTemplate = static_cast<Int>(reinterpret_cast<intptr_t>(GadgetComboBoxGetItemData(comboPlayerTemplate[i], idx)));
+					Int playerTemplate = (Int)(intptr_t)GadgetComboBoxGetItemData(comboPlayerTemplate[i], idx);
 					if (playerTemplate == slot->getPlayerTemplate())
 					{
 						GadgetComboBoxSetSelectedPos(comboPlayerTemplate[i], idx, TRUE);

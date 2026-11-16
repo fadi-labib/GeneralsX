@@ -94,6 +94,9 @@ const Image* ControlBar::m_rankVeteranIcon	= nullptr;
 const Image* ControlBar::m_rankEliteIcon		= nullptr;
 const Image* ControlBar::m_rankHeroicIcon		= nullptr;
 
+// GeneralsX @bugfix Copilot 19/09/2026 Preserve full-resolution HUD card sizing.
+// Additional horizontal aspect fitting makes ultrawide thumbnails too small.
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // CommandButton //////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -304,7 +307,7 @@ void ControlBar::populatePurchaseScience( Player* player )
 
 			setControlCommand( m_sciencePurchaseWindowsRank3[ i ], commandButton );
 			ScienceType	st = SCIENCE_INVALID;
-			ScienceVec sv = commandButton->getScienceVec();
+			const ScienceVec &sv = commandButton->getScienceVec();
 			if (! sv.empty())
 			{
 				st = sv[ 0 ];
@@ -825,10 +828,7 @@ void CommandSet::parseCommandButton( INI* ini, void *instance, void *store, cons
 
 	// get the index to store the command at, and the command array itself
 	const CommandButton **buttonArray = (const CommandButton **)store;
-	// GeneralsX @bugfix BenderAI 12/02/2026 - Cast via intptr_t for 64-bit compatibility
-	// userData is actually an integer index stored as a pointer (common pattern in callbacks).
-	// On 64-bit Linux, void* is 8 bytes but Int is 4 bytes. Cast through intptr_t first.
-	Int buttonIndex = static_cast<Int>(reinterpret_cast<intptr_t>(userData));
+	Int buttonIndex = (Int)(intptr_t)userData;
 
 	// sanity
 	DEBUG_ASSERTCRASH( buttonIndex < MAX_COMMANDS_PER_SET, ("parseCommandButton: button index '%d' out of range",
@@ -1794,9 +1794,9 @@ void ControlBar::evaluateContextUI()
 			return;
 		}
 
-		if (obj->getControllingPlayer()
-			&& obj->getControllingPlayer()->getPlayerTemplate()
-			&& obj->getControllingPlayer()->getPlayerTemplate()->getBeaconTemplate().compare(obj->getTemplate()->getName()) == 0
+		if (obj->getControllingPlayer() &&
+			obj->getControllingPlayer()->getPlayerTemplate() &&
+			obj->getControllingPlayer()->getPlayerTemplate()->getBeaconTemplate().compare(obj->getTemplate()->getName()) == 0
 			)
 		{
 			switchToContext( CB_CONTEXT_BEACON, draw );
@@ -2745,14 +2745,23 @@ void ControlBar::showRallyPoint(const Coord3D* loc)
 	// create a rally point drawable if necessary
 	if (m_rallyPointDrawableID == INVALID_DRAWABLE_ID)
 	{
+		// Upstream reference: CryoTheRenegade, PR #3304 https://github.com/TheSuperHackers/GeneralsGameCode/pull/3304
+		// GeneralsX @bugfix CryoTheRenegade 18/09/2026 Handle a missing RallyPointMarker template
 		const ThingTemplate* ttn = TheThingFactory->findTemplate("RallyPointMarker");
+		if (!ttn)
+		{
+			return;
+		}
+
 		marker = TheThingFactory->newDrawable(ttn);
 		DEBUG_ASSERTCRASH(marker, ("showRallyPoint: Unable to create rally point drawable"));
-		if (marker)
+		// GeneralsX @bugfix BenderAI 20/09/2026 Guard against null marker in release builds
+		if (!marker)
 		{
-			marker->setDrawableStatus(DRAWABLE_STATUS_NO_SAVE);
-			m_rallyPointDrawableID = marker->getID();
+			return;
 		}
+		marker->setDrawableStatus(DRAWABLE_STATUS_NO_SAVE);
+		m_rallyPointDrawableID = marker->getID();
 	}
 	else
 		marker = TheGameClient->findDrawableByID(m_rallyPointDrawableID);
@@ -3268,10 +3277,10 @@ void ControlBar::initSpecialPowershortcutBar( Player *player)
 	m_currentlyUsedSpecialPowersButtons = 0;
 	const PlayerTemplate *pt = player->getPlayerTemplate();
 
-	if(!player || !pt|| !player->isLocalPlayer()
-			|| pt->getSpecialPowerShortcutButtonCount() == 0
-			|| pt->getSpecialPowerShortcutWinName().isEmpty()
-			|| !player->isPlayerActive())
+	if(!player || !pt|| !player->isLocalPlayer() ||
+			pt->getSpecialPowerShortcutButtonCount() == 0 ||
+			pt->getSpecialPowerShortcutWinName().isEmpty() ||
+			!player->isPlayerActive())
 		return;
 	m_currentlyUsedSpecialPowersButtons = pt->getSpecialPowerShortcutButtonCount();
 	AsciiString layoutName, tempName, windowName, parentName;
@@ -3315,9 +3324,9 @@ void ControlBar::populateSpecialPowerShortcut( Player *player)
 {
 	const CommandSet *commandSet;
 	Int i;
-	if(!player || !player->getPlayerTemplate()
-			|| !player->isLocalPlayer() || m_currentlyUsedSpecialPowersButtons == 0
-			|| m_specialPowerShortcutButtons == nullptr || m_specialPowerShortcutButtonParents == nullptr)
+	if(!player || !player->getPlayerTemplate() ||
+			!player->isLocalPlayer() || m_currentlyUsedSpecialPowersButtons == 0 ||
+			m_specialPowerShortcutButtons == nullptr || m_specialPowerShortcutButtonParents == nullptr)
 		return;
 	for( i = 0; i < MAX_SPECIAL_POWER_SHORTCUTS; ++i )
 	{
@@ -3428,10 +3437,10 @@ void ControlBar::populateSpecialPowerShortcut( Player *player)
 							Int i;
 
 							// get command set
-							if( !player || !player->getPlayerTemplate()
-									|| player->getPlayerTemplate()->getPurchaseScienceCommandSetRank1().isEmpty()
-									|| player->getPlayerTemplate()->getPurchaseScienceCommandSetRank3().isEmpty()
-									|| player->getPlayerTemplate()->getPurchaseScienceCommandSetRank8().isEmpty() )
+							if( !player || !player->getPlayerTemplate() ||
+									player->getPlayerTemplate()->getPurchaseScienceCommandSetRank1().isEmpty() ||
+									player->getPlayerTemplate()->getPurchaseScienceCommandSetRank3().isEmpty() ||
+									player->getPlayerTemplate()->getPurchaseScienceCommandSetRank8().isEmpty() )
 							{
 								continue;
 							}
@@ -3516,8 +3525,11 @@ void ControlBar::populateSpecialPowerShortcut( Player *player)
 				}
 			}
 
-			DEBUG_ASSERTCRASH(m_specialPowerShortcutButtons[ currentButton ] != nullptr, ("m_specialPowerShortcutButtons[%d] is null", currentButton));
-			DEBUG_ASSERTCRASH(m_specialPowerShortcutButtonParents[ currentButton ] != nullptr, ("m_specialPowerShortcutButtonParents[%d] is null", currentButton));
+			if( m_specialPowerShortcutButtons[ currentButton ] == nullptr
+					|| m_specialPowerShortcutButtonParents[ currentButton ] == nullptr )
+			{
+				continue;
+			}
 
 			// make sure the window is not hidden
 			m_specialPowerShortcutButtons[ currentButton ]->winHide( FALSE );
@@ -3551,6 +3563,8 @@ Bool ControlBar::hasAnyShortcutSelection() const
 		const CommandButton *command;
 
 		win = m_specialPowerShortcutButtons[ i ];
+		if( win == nullptr )
+			continue;
 		if( win->winIsHidden() == TRUE )
 			continue;
 
@@ -3590,23 +3604,24 @@ Bool ControlBar::canShowSpecialPowerShortcut() const
 //-------------------------------------------------------------------------------------------------
 void ControlBar::updateSpecialPowerShortcut()
 {
-	if(!m_specialPowerShortcutParent || !m_specialPowerShortcutButtons
-	   || !ThePlayerList || !ThePlayerList->getLocalPlayer())
+	if(!m_specialPowerShortcutParent || !m_specialPowerShortcutButtons ||
+	   !ThePlayerList || !ThePlayerList->getLocalPlayer())
 		return;
 
 	const Bool hasValidShortcutButton = canShowSpecialPowerShortcut();
 
-	if( hasValidShortcutButton
-		  && m_specialPowerShortcutParent->winIsHidden()
-			&& m_contextParent[ CP_MASTER ]
-			&& !m_contextParent[ CP_MASTER ]->winIsHidden() )
+	if( hasValidShortcutButton &&
+		  m_specialPowerShortcutParent->winIsHidden() &&
+			m_contextParent[ CP_MASTER ] &&
+			!m_contextParent[ CP_MASTER ]->winIsHidden() )
 	{
 		showSpecialPowerShortcut();
 		animateSpecialPowerShortcut(TRUE);
 	}
-	else if( !hasValidShortcutButton
-					 && !m_specialPowerShortcutParent->winIsHidden()
-					 && m_animateWindowManagerForGenShortcuts->isFinished() )
+	else if( !hasValidShortcutButton &&
+					 !m_specialPowerShortcutParent->winIsHidden() &&
+					 m_animateWindowManagerForGenShortcuts &&
+					 m_animateWindowManagerForGenShortcuts->isFinished() )
 	{
 		animateSpecialPowerShortcut(FALSE);
 	}
@@ -3628,6 +3643,8 @@ void ControlBar::updateSpecialPowerShortcut()
 		const CommandButton *command;
 		// get the window
 		win = m_specialPowerShortcutButtons[ i ];
+		if( win == nullptr )
+			continue;
 
 		if( win->winIsHidden() == TRUE )
 			continue;
@@ -3720,6 +3737,8 @@ void ControlBar::drawSpecialPowerShortcutMultiplierText()
 		const CommandButton *command;
 		// get the window
 		win = m_specialPowerShortcutButtons[ i ];
+		if( win == nullptr )
+			continue;
 
 		if( win->winIsHidden() == TRUE )
 			continue;
@@ -3772,7 +3791,7 @@ void ControlBar::animateSpecialPowerShortcut( Bool isOn )
 	Bool dontAnimate = TRUE;
 	for( Int i = 0; i < m_currentlyUsedSpecialPowersButtons; ++i )
 	{
-		if (m_specialPowerShortcutButtons[i]->winGetUserData())
+		if (m_specialPowerShortcutButtons[i] && m_specialPowerShortcutButtons[i]->winGetUserData())
 		{
 			dontAnimate = FALSE;
 			break;
@@ -3794,13 +3813,13 @@ void ControlBar::animateSpecialPowerShortcut( Bool isOn )
 
 void ControlBar::showSpecialPowerShortcut()
 {
-	if(TheScriptEngine->isGameEnding() || !m_specialPowerShortcutParent
-		||!m_specialPowerShortcutButtons || !ThePlayerList || !ThePlayerList->getLocalPlayer())
+	if(TheScriptEngine->isGameEnding() || !m_specialPowerShortcutParent ||
+		!m_specialPowerShortcutButtons || !ThePlayerList || !ThePlayerList->getLocalPlayer())
 		return;
 	Bool dontAnimate = TRUE;
 	for( Int i = 0; i < m_currentlyUsedSpecialPowersButtons; ++i )
 	{
-		if (m_specialPowerShortcutButtons[i]->winGetUserData())
+		if (m_specialPowerShortcutButtons[i] && m_specialPowerShortcutButtons[i]->winGetUserData())
 		{
 			dontAnimate = FALSE;
 			break;
@@ -3851,8 +3870,14 @@ GameFont *ControlBar::overrideTooltipGadgetFont( GameWindow *win )
 	if( TheGlobalLanguageData && TheGlobalLanguageData->m_unicodeFontName.isNotEmpty() )
 		fontName = TheGlobalLanguageData->m_unicodeFontName;
 
-	// Get the font from the font library (12pt, not bold)
-	GameFont *newFont = TheFontLibrary->getFont( fontName, 12, FALSE );
+	// Scale the font size for high resolutions (Issue #183)
+	int baseSize = 12;
+	float scaleY = TheDisplay ? ((float)TheDisplay->getHeight() / 600.0f) : 1.0f;
+	int scaledSize = (scaleY > 1.0f) ? (int)(baseSize * scaleY * 0.70f) : baseSize;
+	if (scaledSize < baseSize) scaledSize = baseSize;
+
+	// Get the font from the font library (scaled size, not bold)
+	GameFont *newFont = TheFontLibrary->getFont( fontName, scaledSize, FALSE );
 	if( !newFont )
 		return nullptr;
 

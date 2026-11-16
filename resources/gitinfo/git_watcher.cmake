@@ -125,6 +125,33 @@ function(GetGitState _working_dir)
     # RunGitCommand ever returns a non-zero exit code.
     set(ENV{GIT_RETRIEVED_STATE} "true")
 
+    # Allow passing override variables from CI or sandboxed environments via file
+    include("${_working_dir}/.git-override.cmake" OPTIONAL)
+
+    if(DEFINED GENERALS_GIT_OVERRIDE_TSTAMP OR DEFINED GENERALS_GIT_OVERRIDE_TAG)
+        set(ENV{GIT_IS_DIRTY} "false")
+        if(DEFINED GENERALS_GIT_OVERRIDE_IS_DIRTY)
+            set(ENV{GIT_IS_DIRTY} "${GENERALS_GIT_OVERRIDE_IS_DIRTY}")
+        endif()
+        set(ENV{GIT_HEAD_SHA1} "0000000000000000000000000000000000000000")
+        set(ENV{GIT_AUTHOR_NAME} "GitHub Actions")
+        set(ENV{GIT_AUTHOR_EMAIL} "actions@github.com")
+        set(ENV{GIT_COMMIT_DATE_ISO8601} "")
+        set(ENV{GIT_COMMIT_SUBJECT} "Override")
+        set(ENV{GIT_COMMIT_BODY} "\"\"")
+        set(ENV{GIT_COMMIT_TSTAMP} "0")
+        if(DEFINED GENERALS_GIT_OVERRIDE_TSTAMP)
+            set(ENV{GIT_COMMIT_TSTAMP} "${GENERALS_GIT_OVERRIDE_TSTAMP}")
+        endif()
+        set(ENV{GIT_HEAD_SHORT_SHA1} "00000000")
+        set(ENV{GIT_REV_LIST_COUNT} "0")
+        set(ENV{GIT_TAG} "")
+        if(DEFINED GENERALS_GIT_OVERRIDE_TAG)
+            set(ENV{GIT_TAG} "${GENERALS_GIT_OVERRIDE_TAG}")
+        endif()
+        return()
+    endif()
+
     if(GIT_EXECUTABLE)
         # Get whether or not the working tree is dirty.
         RunGitCommand(status --porcelain)
@@ -182,14 +209,14 @@ function(GetGitState _working_dir)
         else()
             set(ENV{GIT_COMMIT_BODY} "\"\"") # empty string.
         endif()
-        
+
         RunGitCommand(show -s "--format=%ct" ${object})
         if(exit_code EQUAL 0)
             set(ENV{GIT_COMMIT_TSTAMP} "${output}")
         else()
             set(ENV{GIT_COMMIT_TSTAMP} "0")
         endif()
-        
+
         RunGitCommand(show -s "--format=%h" ${object})
         if(exit_code EQUAL 0)
             set(ENV{GIT_HEAD_SHORT_SHA1} ${output})
@@ -210,7 +237,7 @@ function(GetGitState _working_dir)
         else()
             set(ENV{GIT_TAG} "")
         endif()
-        
+
         # >>>
         # 2. Additional git properties can be added here via the
         #    "execute_process()" command. Be sure to set them in

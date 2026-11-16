@@ -27,6 +27,7 @@
 #include "Common/MessageStream.h"
 #include "GameNetwork/GameInfo.h"
 
+enum GameMode CPP_11(: Int);
 class File;
 
 /**
@@ -39,11 +40,34 @@ private:
 	GameSlot m_ReplaySlot[MAX_SLOTS];
 
 public:
-	ReplayGameInfo()
+	ReplayGameInfo() : m_localSlotNum(-1)
 	{
 		for (Int i = 0; i< MAX_SLOTS; ++i)
 			setSlotPointer(i, &m_ReplaySlot[i]);
 	}
+	virtual ~ReplayGameInfo() override {}
+
+	virtual void reset() override
+	{
+		GameInfo::reset();
+		m_localSlotNum = -1;
+	}
+
+	virtual Int getLocalSlotNum() const override
+	{
+		DEBUG_ASSERTCRASH(isInGame(), ("Looking for local game slot while not in game"));
+		if (!isInGame())
+		{
+			return -1;
+		}
+
+		return m_localSlotNum;
+	}
+
+	void setLocalSlotNum(Int slotNum) { m_localSlotNum = slotNum; }
+
+private:
+	Int m_localSlotNum;
 };
 
 enum RecorderModeType CPP_11(: Int) {
@@ -53,9 +77,35 @@ enum RecorderModeType CPP_11(: Int) {
 	RECORDERMODETYPE_NONE // this is a valid state to be in on the shell map, or in saved games
 };
 
-class CRCInfo;
+class RecorderClass : public SubsystemInterface
+{
+protected:
+	// TheSuperHackers @info helmutbuhler 03/04/2025 CRC overview:
+	// Each peer periodically computes a CRC from its local game state and broadcasts it to all peers, including itself,
+	// to verify synchronization. CRC messages are received a few frames later in network games to avoid stalling every
+	// frame while waiting for all peers. This works because all peers compare the same received CRCs on the same frame.
+	//
+	// Replays are different: recorded CRC messages appear on the frame they were originally received, so directly
+	// comparing them against the current local state would mismatch. To handle this, local CRCs must be queued until the
+	// corresponding replay CRC messages arrive. This class implements that queue.
+	class CRCInfo
+	{
+	public:
+		CRCInfo();
+		CRCInfo(UnsignedInt localPlayer);
+		void addCRC(UnsignedInt val);
+		UnsignedInt readCRC();
+		int GetQueueSize() const { return m_data.size(); }
+		UnsignedInt getLocalPlayer() const { return m_localPlayer; }
+		void setSawCRCMismatch() { m_sawCRCMismatch = TRUE; }
+		Bool sawCRCMismatch() const { return m_sawCRCMismatch; }
 
-class RecorderClass : public SubsystemInterface {
+	protected:
+		Bool m_sawCRCMismatch;
+		UnsignedInt m_localPlayer;
+		std::list<UnsignedInt> m_data;
+	};
+
 public:
 	struct ReplayHeader;
 
@@ -73,6 +123,7 @@ public:
 	// Methods dealing with playback.
 	void updatePlayback();														///< The update function for playing back a file.
 	Bool playbackFile(AsciiString filename);					///< Starts playback of the specified file.
+	void loadQueuedReplay();													///< Play the replay file requested on startup.
 	Bool replayMatchesGameVersion(AsciiString filename); ///< Returns true if the playback is a valid playback file for this version.
 	static Bool replayMatchesGameVersion(const ReplayHeader& header); ///< Returns true if the playback is a valid playback file for this version.
 	AsciiString getCurrentReplayFilename();			///< valid during playback only
@@ -87,14 +138,13 @@ public:
 public:
 	void handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool fromPlayback);
 protected:
-	CRCInfo *m_crcInfo;
+	CRCInfo m_crcInfo;
 public:
 
 	// read in info relating to a replay, conditionally setting up m_file for playback
 	struct ReplayHeader
 	{
 		AsciiString filename;
-		Bool forPlayback;
 		UnicodeString replayName;
 		SYSTEMTIME timeVal;
 		UnicodeString versionString;
@@ -111,13 +161,14 @@ public:
 		AsciiString gameOptions;
 		Int localPlayerIndex;
 	};
-	Bool readReplayHeader( ReplayHeader& header );
+	Bool readReplayHeader( ReplayHeader& header, const AsciiString& filename, Bool forPlayback );
 
 	RecorderModeType getMode();												///< Returns the current operating mode.
 	Bool isPlaybackMode() const { return m_mode == RECORDERMODETYPE_PLAYBACK || m_mode == RECORDERMODETYPE_SIMULATION_PLAYBACK; }
 	void initControls();															///< Show or Hide the Replay controls
 
 	static AsciiString getReplayDir();								///< Returns the directory that holds the replay files.
+	static AsciiString getReplayPathForRead(const AsciiString& filenameOrPath); ///< Returns the path to open for a replay filename or absolute replay path.
 	static AsciiString getReplayArchiveDir();					///< Returns the directory that holds the archived replay files.
 	static AsciiString getReplayExtention();					///< Returns the file extention for replay files.
 	static AsciiString getLastReplayFileName();				///< Returns the filename used for the default replay.
@@ -126,7 +177,7 @@ public:
 
 	Bool isMultiplayer();												///< is this a multiplayer game (record OR playback)?
 
-	Int getGameMode() { return m_originalGameMode; }
+	GameMode getGameMode() const { return m_originalGameMode; }
 
 	void logPlayerDisconnect(UnicodeString player, Int slot);
 	void logCRCMismatch();
@@ -136,7 +187,7 @@ public:
 	void setArchiveEnabled(Bool enable) { m_archiveReplays = enable; } ///< Enable or disable replay archiving.
 	void stopRecording();															///< Stop recording and close m_file.
 protected:
-	void startRecording(GameDifficulty diff, Int originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
+	void startRecording(GameDifficulty diff, GameMode originalGameMode, Int rankPoints, Int maxFPS);					///< Start recording to m_file.
 	void writeToFile(GameMessage *msg);								///< Write this GameMessage to m_file.
 	void archiveReplay(AsciiString fileName);					///< Move the specified replay file to the archive directory.
 
@@ -145,15 +196,19 @@ protected:
 
 	AsciiString readAsciiString();										///< Read the next string from m_file using ascii characters.
 	UnicodeString readUnicodeString();								///< Read the next string from m_file using unicode characters.
-	void readNextFrame();															///< Read the next frame number to execute a command on.
+	Int readReplayWideChar();											///< Read a replay wide character using the detected on-disk width.
+	void writeReplayUnicodeString(const UnicodeString& value);
+	void writeReplayWideChar(WideChar value);
+	void readNextFrame();															///< Read and validate the next frame number to execute a command on.
 	void appendNextCommand();													///< Read the next GameMessage and append it to TheCommandList.
 	void writeArgument(GameMessageArgumentDataType type, const GameMessageArgumentType arg);
 	void readArgument(GameMessageArgumentDataType type, GameMessage *msg);
 
 	struct CullBadCommandsResult
 	{
-		CullBadCommandsResult() : hasClearGameDataMessage(false) {}
+		CullBadCommandsResult() : hasClearGameDataMessage(false), hasNewGameMessage(false) {}
 		Bool hasClearGameDataMessage;
+		Bool hasNewGameMessage;
 	};
 
 	CullBadCommandsResult cullBadCommands(); ///< prevent the user from giving mouse commands that he shouldn't be able to do during playback.
@@ -164,6 +219,7 @@ protected:
 	RecorderModeType m_mode;
 	AsciiString m_currentReplayFilename;							///< valid during playback only
 	UnsignedInt m_playbackFrameCount;
+	UnsignedInt m_replayWideCharBytes;
 
 	ReplayGameInfo m_gameInfo;
 	Bool m_wasDesync;
@@ -171,7 +227,7 @@ protected:
 	Bool m_doingAnalysis;
 	Bool m_archiveReplays;														///< if true, each replay is archived to the replay archive folder after recording
 
-	Int m_originalGameMode; // valid in replays
+	GameMode m_originalGameMode; // valid while recording and in replays
 
 	UnsignedInt m_nextFrame;												///< The Frame that the next message is to be executed on.  This can be -1.
 };

@@ -16,13 +16,30 @@
 **	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// This file provides the Interlocked functions of the Windows SDK. The VC6 headers have them neither for volatile
+// pointers nor for 8, 16 and 64 bit values, so VC6 gets its own implementations.
 #pragma once
 
 #if defined(_MSC_VER) && _MSC_VER < 1300
 
-inline long InterlockedCompareExchange(long volatile *Destination, long Exchange, long Comparand)
+	#include "interlocked_x86asm.inl"
+
+#elif defined(_WIN32)
+
+	#include <windows.h>
+
+#endif
+
+#if !defined(_WIN32)
+inline void* InterlockedCompareExchangePointer(void* volatile* Destination, void* Exchange, void* Comparand)
 {
-	return (long)InterlockedCompareExchange((PVOID*)Destination, (PVOID)Exchange, (PVOID)Comparand);
+	void* expected = Comparand;
+	__atomic_compare_exchange_n(Destination, &expected, Exchange, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+	return expected;
 }
 
+inline void* InterlockedExchangePointer(void* volatile* Target, void* Value)
+{
+	return __atomic_exchange_n(Target, Value, __ATOMIC_SEQ_CST);
+}
 #endif

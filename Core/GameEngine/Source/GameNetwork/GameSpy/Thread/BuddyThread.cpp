@@ -31,13 +31,17 @@
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
 
+#if defined(_UNIX) && !defined(__APPLE__)
+#include <cxxabi.h>
+#endif
+
 #include "GameNetwork/GameSpy/BuddyThread.h"
 #include "GameNetwork/GameSpy/PeerThread.h"
 #include "GameNetwork/GameSpy/PersistentStorageThread.h"
 #include "GameNetwork/GameSpy/ThreadUtils.h"
 
-#include "mutex.h"
-#include "thread.h"
+#include "WWLib/mutex.h"
+#include "WWLib/thread.h"
 
 
 //-------------------------------------------------------------------------
@@ -125,7 +129,7 @@ enum CallbackType
 
 void callbackWrapper( GPConnection *con, void *arg, void *param )
 {
-	CallbackType info = (CallbackType)(uintptr_t)param;
+	CallbackType info = (CallbackType)(intptr_t)param;
 	BuddyThreadClass *thread = MESSAGE_QUEUE->getThread() ? MESSAGE_QUEUE->getThread() : nullptr /*(TheGameSpyBuddyMessageQueue)?TheGameSpyBuddyMessageQueue->getThread():nullptr*/;
 	if (!thread)
 		return;
@@ -385,6 +389,10 @@ void BuddyThreadClass::Thread_Function()
 	}
 
 	gpDestroy( con );
+#if defined(_UNIX) && !defined(__APPLE__) && !defined(__EMSCRIPTEN__)  // glibc thread-cancel unwind; libc++ has none
+	} catch ( abi::__forced_unwind& ) {
+		throw;
+#endif
 	} catch ( ... ) {
 		DEBUG_CRASH(("Exception in buddy thread!"));
 	}
@@ -517,7 +525,7 @@ void BuddyThreadClass::messageCallback( GPConnection *con, GPRecvBuddyMessageArg
 	// get info about the person asking to be our buddy
 	gpGetInfo( con, arg->profile, GP_CHECK_CACHE, GP_BLOCKING, (GPCallback)getNickForMessage, &messageResponse);
 
-	std::wstring s = MultiByteToWideCharSingleLine( arg->message );
+	stl::wstring s = MultiByteToWideCharSingleLine( arg->message );
 	wcslcpy(messageResponse.arg.message.text, s.c_str(), MAX_BUDDY_CHAT_LEN);
 	messageResponse.arg.message.date = arg->date;
 	DEBUG_LOG(("Got a buddy message from %d [%ls]", arg->profile, s.c_str()));
@@ -636,7 +644,7 @@ void BuddyThreadClass::requestCallback( GPConnection *con, GPRecvBuddyRequestArg
 	// get info about the person asking to be our buddy
 	gpGetInfo( con, arg->profile, GP_CHECK_CACHE, GP_BLOCKING, (GPCallback)getInfoResponseForRequest, &response);
 
-	std::wstring s = MultiByteToWideCharSingleLine( arg->reason );
+	stl::wstring s = MultiByteToWideCharSingleLine( arg->reason );
 	wcslcpy(response.arg.request.text, s.c_str(), GP_REASON_LEN);
 
 	TheGameSpyBuddyMessageQueue->addResponse( response );

@@ -177,6 +177,12 @@ OpenContain::~OpenContain()
 										 ("OpenContain %s: m_xferContainIDList is not empty but should be",
 											getObject()->getTemplate()->getName().str() ) );
 
+#if RETAIL_COMPATIBLE_CRC
+	// TheSuperHackers @bugfix Caball009 18/08/2026 Due to a potential use-after-free bug that cannot be fixed
+	// with retail compatibility, it's desirable to be able to check if the contain list is empty after its destruction.
+	// Clear the list explicitly to reset the list size.
+	m_containList.clear();
+#endif
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -390,6 +396,11 @@ void OpenContain::addToContain( Object *rider )
 }
 
 //-------------------------------------------------------------------------------------------------
+Bool OpenContain::isContained( const Object *obj ) const
+{
+	return obj->getContainedBy() == getObject();
+}
+
 //-------------------------------------------------------------------------------------------------
 void OpenContain::addToContainList( Object *rider )
 {
@@ -433,6 +444,15 @@ void OpenContain::removeFromContain( Object *rider, Bool exposeStealthUnits )
 		return;
 
 	}
+
+#if RETAIL_COMPATIBLE_CRC
+	// TheSuperHackers @bugfix Caball009 18/08/2026 Due to a potential use-after-free bug that cannot be fixed
+	// with retail compatibility, the 'contained by' pointer of this object may point to an already destroyed object.
+	// Check the list size before executing the find operation below, otherwise the game crashes if the list
+	// was already destructed.
+	if (m_containList.empty())
+		return;
+#endif
 
 	ContainedItemsList::iterator it = std::find(m_containList.begin(), m_containList.end(), rider);
 	if (it != m_containList.end())
@@ -768,6 +788,9 @@ void OpenContain::scatterToNearbyPosition(Object* rider)
 		// set position of the object at center of building and move them toward pos
 		rider->setPosition( theContainer->getPosition() );
 		ai->ignoreObstacle(theContainer);
+#if !RETAIL_COMPATIBLE_CRC
+		ai->friend_setGoalObject(nullptr);
+#endif
 		ai->aiMoveToPosition( &pos, CMD_FROM_AI );
 
 	}
@@ -1587,7 +1610,9 @@ void OpenContain::processDamageToContained(Real percentDamage)
 		if( !object->isEffectivelyDead() && killContained )
 			object->kill(); // in case we are carrying flame proof troops we have been asked to kill
 
-		if ( object->isEffectivelyDead() )
+		// GeneralsX @bugfix mreza0100 23/07/2026 A destroyed occupant cannot remove itself
+		// while the contain list is temporarily detached. Do not restore a pending dangling pointer.
+		if ( object->isEffectivelyDead() || object->isDestroyed() )
 		{
 			onRemoving( object );
 			object->onRemovedFrom( getObject() );
