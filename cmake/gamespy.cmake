@@ -22,15 +22,19 @@ if(EMSCRIPTEN)
                 gsnatneg gspeer gspinger gspt gsqr gsqr2 gssake gssc
                 gsserverbrowsing gsvoice2 gswebservices gamespy)
         if(TARGET ${_gs})
-            # _UNIX/_LINUX drive the GameSpy headers; some .c files switch on the
-            # __linux__ builtin directly, so set that too. Emscripten's own musl
-            # headers key on __EMSCRIPTEN__, not __linux__, so this only steers
-            # GameSpy's platform picks toward its POSIX path.
+            # _UNIX/_LINUX drive the GameSpy headers (gscommon.h/gsplatform.h only
+            # test __linux__ to derive those two), so they are PUBLIC. Some GameSpy
+            # .c files switch on the __linux__ builtin directly, so it is set too,
+            # but PRIVATE: exported, it reached ~800 engine TUs, where libc++'s
+            # <atomic> then picked a 32-bit __cxx_contention_t against the library's
+            # 64-bit one (the __libcpp_atomic_monitor signature-mismatch link
+            # warning) and engine code took its Linux-desktop branches.
             get_target_property(_gs_type ${_gs} TYPE)
             if(_gs_type STREQUAL "INTERFACE_LIBRARY")
-                target_compile_definitions(${_gs} INTERFACE _UNIX _LINUX __linux__)
+                target_compile_definitions(${_gs} INTERFACE _UNIX _LINUX)
             else()
-                target_compile_definitions(${_gs} PUBLIC _UNIX _LINUX __linux__)
+                target_compile_definitions(${_gs} PUBLIC _UNIX _LINUX)
+                target_compile_definitions(${_gs} PRIVATE __linux__)
             endif()
         endif()
     endforeach()

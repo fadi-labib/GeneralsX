@@ -911,19 +911,20 @@ Bool BIGFileSystem::loadArchiveFilesFromDirectory(AsciiString dir, AsciiString f
 	// virtual dir, so they arrive in a single alphabetical list: base "maps.big" sorted before
 	// "MapsZH.big" and won, which hid ~95 ZH maps and blacked out the menu backdrop. Load every
 	// base archive first without override, then every "...ZH.big" with override, independent of
-	// the enumeration order. (Upstream's patch/generalsx.big ordering does not apply: the web
-	// bundle ships neither.)
+	// the enumeration order. A third pass mounts generalsx*.big last with override, the same top
+	// precedence upstream gives it: it carries the GeneralsX UI (its MainMenu.wnd and options menu),
+	// which the engine is written against. The web build embeds it at /generalsx.big.
 	{
 		Bool added = FALSE;
-		for (Int pass = 0; pass < 2; ++pass) {
+		for (Int pass = 0; pass < 3; ++pass) {
 			for (FilenameListIter it = filenameList.begin(); it != filenameList.end(); ++it) {
 				// TheSuperHackers @bugfix bobtista 18/11/2025 Skip duplicate INIZH.big in Data\INI (CRC mismatches).
 				if (it->endsWithNoCase("Data\\INI\\INIZH.big") || it->endsWithNoCase("Data/INI/INIZH.big"))
 					continue;
-				const Bool isZH = it->endsWithNoCase("ZH.big");
-				if (isZH != (pass == 1))
+				const Int archivePass = isGeneralsXArchiveFilename(*it) ? 2 : (it->endsWithNoCase("ZH.big") ? 1 : 0);
+				if (archivePass != pass)
 					continue;
-				if (loadOneArchiveFile(*it, pass == 1 ? TRUE : overwrite))
+				if (loadOneArchiveFile(*it, pass > 0 ? TRUE : overwrite))
 					added = TRUE;
 			}
 		}

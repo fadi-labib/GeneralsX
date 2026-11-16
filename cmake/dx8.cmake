@@ -270,16 +270,7 @@ if(EMSCRIPTEN)
 "}\n"
 "void destroy_gl_context() {}\n"
 "bool gl_context_alive() { return SDL_GL_GetCurrentContext() != nullptr; }\n"
-"}\n"
-"\n"
-"// libc++ atomic-sync backend: emscripten's -fno-exceptions (noexcept) libc++\n"
-"// variant omits std::__libcpp_atomic_wait, which the engine's std::atomic::wait\n"
-"// pulls in. Provide a no-op (busy-poll semantics; the caller re-checks the\n"
-"// predicate). Threading correctness revisited when it matters.\n"
-"#include <cstdint>\n"
-"namespace std { inline namespace __2 {\n"
-"void __libcpp_atomic_wait(void const volatile*, int32_t) {}\n"
-"}}\n")
+"}\n")
   add_library(dx8wasm_backend STATIC
     ${DX8WASM_DIR}/runtime/d3d8webgl/d3d8.cpp
     ${DX8WASM_DIR}/runtime/d3d8webgl/device.cpp
