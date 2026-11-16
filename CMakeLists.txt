@@ -180,6 +180,13 @@ if(RTS_BUILD_ZEROHOUR)
         add_dependencies(z_generals sage_patch)
     endif()
     add_dependencies(z_generals generalsx_big)
+    # GeneralsX @build dx8wasm - the browser has no install directory to stage generalsx.big into,
+    # so embed it in the virtual filesystem root, where the archive scan finds it. Without it the
+    # main menu runs without the GeneralsX layout and its panel never reveals at boot.
+    if(EMSCRIPTEN)
+        target_link_options(z_generals PRIVATE "SHELL:--embed-file ${GENERALSX_BIG_OUTPUT}@/generalsx.big")
+        set_property(TARGET z_generals APPEND PROPERTY LINK_DEPENDS "${GENERALSX_BIG_OUTPUT}")
+    endif()
 endif()
 
 if(RTS_BUILD_GENERALS)
