@@ -957,6 +957,17 @@ void ResolutionDialogUpdate()
 //-------------------------------------------------------------------------------------------------
 /** Main menu update method */
 //-------------------------------------------------------------------------------------------------
+// Play the main menu's reveal: what the first pointer movement or key press does in MainMenuInput.
+static void revealMainMenu()
+{
+	initialGadgetDelay = 1;
+	dropDownWindows[DROPDOWN_MAIN]->winHide(FALSE);
+	TheTransitionHandler->setGroup("MainMenuFade", TRUE);
+	TheTransitionHandler->setGroup("MainMenuDefaultMenu");
+	TheMouse->setVisibility(TRUE);
+	notShown = FALSE;
+}
+
 void DownloadMenuUpdate( WindowLayout *layout, void *userData );
 void MainMenuUpdate( WindowLayout *layout, void *userData )
 {
@@ -966,6 +977,21 @@ void MainMenuUpdate( WindowLayout *layout, void *userData )
 	}
 	if(DontShowMainMenu && justEntered)
 		justEntered = FALSE;
+
+#ifdef __EMSCRIPTEN__
+	// GeneralsX @feature dx8wasm 16/11/2026 Show the main menu at boot on the web.
+	// The first MainMenuInit (FirstTimeRunningTheGame) fades the shell map in and then waits for
+	// pointer motion over 20 px or a key before revealing the menu -- the original game's
+	// attract-mode behaviour. In a browser tab that reads as a blank page, and a touch device has
+	// no idle motion at all. Reveal it ourselves once the fade-in has finished (or after ~3 s
+	// regardless), through the same path input would take.
+	{
+		static Int webRevealWait = 0;
+		if (notShown && !DontShowMainMenu && dropDownWindows[DROPDOWN_MAIN]
+			&& (TheTransitionHandler->isFinished() || ++webRevealWait > 90))
+			revealMainMenu();
+	}
+#endif
 
 #ifdef __EMSCRIPTEN__
 	// GeneralsX @build dx8wasm - `-skirmishonly`: re-assert the hides every frame.
@@ -1304,12 +1330,7 @@ WindowMsgHandledType MainMenuInput( GameWindow *window, UnsignedInt msg,
 
 			if (doShow)
 			{
-				initialGadgetDelay = 1;
-				dropDownWindows[DROPDOWN_MAIN]->winHide(FALSE);
-				TheTransitionHandler->setGroup("MainMenuFade", TRUE);
-				TheTransitionHandler->setGroup("MainMenuDefaultMenu");
-				TheMouse->setVisibility(TRUE);
-				notShown = FALSE;
+				revealMainMenu();
 				return MSG_HANDLED;
 			}
 
@@ -1319,12 +1340,7 @@ WindowMsgHandledType MainMenuInput( GameWindow *window, UnsignedInt msg,
 		// --------------------------------------------------------------------------------------------
 		case GWM_CHAR:
 		{
-			initialGadgetDelay = 1;
-			dropDownWindows[DROPDOWN_MAIN]->winHide(FALSE);
-			TheTransitionHandler->setGroup("MainMenuFade", TRUE);
-			TheTransitionHandler->setGroup("MainMenuDefaultMenu");
-			TheMouse->setVisibility(TRUE);
-			notShown = FALSE;
+			revealMainMenu();
 			return MSG_HANDLED;
 		}
 	}
